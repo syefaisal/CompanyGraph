@@ -1,0 +1,13 @@
+{
+  "permissions": {
+    "allow": [
+      "Read(//Users/syefai/.pyenv/**)",
+      "Read(//Users/syefai/Library/Python/**)",
+      "Bash(brew list *)",
+      "Bash(brew info *)",
+      "Bash(uv --version)",
+      "Bash(pipx --version)",
+      "Bash(docker compose up *)"
+    ]
+  }
+}
