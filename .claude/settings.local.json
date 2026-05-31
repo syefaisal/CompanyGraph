@@ -7,7 +7,24 @@
       "Bash(brew info *)",
       "Bash(uv --version)",
       "Bash(pipx --version)",
-      "Bash(docker compose up *)"
+      "Bash(docker compose up *)",
+      "Bash(python *)",
+      "Bash(docker compose ps *)",
+      "Bash(curl -s http://localhost:8000/metrics)",
+      "Bash(python3 -m json.tool)",
+      "Bash(curl -s http://localhost:8000/)",
+      "Bash(curl -s http://localhost:5176/)",
+      "Bash(open *)",
+      "Bash(pkill -f \"uvicorn api:app\")",
+      "Bash(python3 -c ' *)",
+      "Bash(grep *)",
+      "Bash(git reset *)",
+      "Bash(git mv *)",
+      "Bash(sed -i '' -e 's|python seed\\\\.py # clears existing data and reloads|python backend/seed.py # clears existing data and reloads|g' -e 's|Seed PropTech graph \\(python seed\\\\.py\\)|Seed PropTech graph \\(python backend/seed.py\\)|g' docs/DEVELOPER_GUIDE.md)",
+      "Bash(sed -i '' -e 's|- \\\\[ \\\\] `python seed\\\\.py`|- [ ] `python backend/seed.py`|g' -e 's|^python eval\\\\.py$|python backend/eval.py|g' docs/VIDEO_SCRIPT.md)"
     ]
-  }
+  },
+  "disabledMcpjsonServers": [
+    "company-graph"
+  ]
 }

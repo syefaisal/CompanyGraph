@@ -2,7 +2,7 @@
   "mcpServers": {
     "company-graph": {
       "command": "/Users/syefai/workspace/CompanyGraph/.venv/bin/python",
-      "args": ["mcp_server.py"],
+      "args": ["backend/mcp_server.py"],
       "cwd": "/Users/syefai/workspace/CompanyGraph",
       "env": {
         "NEO4J_URI": "bolt://localhost:7687",

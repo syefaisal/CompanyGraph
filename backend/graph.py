@@ -157,6 +157,74 @@ def list_nodes(label: str = None, limit: int = 100) -> list[dict]:
     return [node_dict(r["n"]) for r in rows]
 
 
+def _tokenize(text: str) -> list[str]:
+    import re
+    return re.findall(r"\w+", text.lower())
+
+
+def _node_to_text(node: dict) -> str:
+    fields = ["name", "description", "role", "category", "title", "rationale", "industry", "type"]
+    return " ".join(str(node.get(f, "")) for f in fields if node.get(f))
+
+
+def _bm25_score(
+    query_tokens: list[str],
+    doc_tokens: list[str],
+    df: dict[str, int],
+    N: int,
+    avgdl: float,
+    k1: float = 1.5,
+    b: float = 0.75,
+) -> float:
+    import math
+    freq: dict[str, int] = {}
+    for t in doc_tokens:
+        freq[t] = freq.get(t, 0) + 1
+    dl = len(doc_tokens)
+    score = 0.0
+    for term in query_tokens:
+        if term not in freq:
+            continue
+        tf = freq[term]
+        n_docs = df.get(term, 0)
+        idf = math.log((N - n_docs + 0.5) / (n_docs + 0.5) + 1)
+        tf_norm = (tf * (k1 + 1)) / (tf + k1 * (1 - b + b * dl / max(avgdl, 1)))
+        score += idf * tf_norm
+    return score
+
+
+def hybrid_search_nodes(keyword: str, label: str = None, top_k: int = 20) -> list[dict]:
+    """BM25 lexical search over all node text fields. Falls back to substring search on zero results."""
+    label_filter = f":{label}" if label else ""
+    rows = run(f"MATCH (n{label_filter}) RETURN n LIMIT 500")
+    if not rows:
+        return []
+
+    nodes = [node_dict(r["n"]) for r in rows]
+    corpus = [_tokenize(_node_to_text(n)) for n in nodes]
+    query_tokens = _tokenize(keyword)
+
+    if not query_tokens:
+        return nodes[:top_k]
+
+    N = len(corpus)
+    avgdl = sum(len(d) for d in corpus) / N
+
+    df: dict[str, int] = {}
+    for doc in corpus:
+        for term in set(doc):
+            df[term] = df.get(term, 0) + 1
+
+    scored = [
+        (_bm25_score(query_tokens, corpus[i], df, N, avgdl), nodes[i])
+        for i in range(N)
+    ]
+    scored.sort(key=lambda x: x[0], reverse=True)
+    results = [node for score, node in scored if score > 0][:top_k]
+
+    return results if results else search_nodes(keyword, label)
+
+
 def graph_stats() -> dict:
     counts = run(
         """

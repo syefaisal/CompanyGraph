@@ -14,12 +14,12 @@ interface Message {
 }
 
 const SUGGESTIONS = [
-  { icon: '👥', text: 'Which employees work on products used by the most customers?' },
-  { icon: '⚡', text: 'What decisions have affected the most workflows?' },
-  { icon: '🔗', text: 'Show the full chain from a person to a customer through products.' },
-  { icon: '🏢', text: 'Who are the key people in enterprise tier workflows?' },
-  { icon: '🔄', text: 'Which products depend on the most other products?' },
-  { icon: '💥', text: 'What is the impact chain if the core platform was removed?' },
+  { icon: '👥', text: 'Who owns the Lease Renewal workflow and who else is involved?' },
+  { icon: '⚖️', text: 'Trace the full impact of the GDPR and CCPA compliance overhaul.' },
+  { icon: '🔗', text: 'Find the connection between Elena Rodriguez and Apex Commercial.' },
+  { icon: '🏢', text: 'Which products does Sunstone Residential use and who built them?' },
+  { icon: '⚠️', text: 'What workflows would be at risk if Marcus Webb left the company?' },
+  { icon: '➕', text: "Add a new compliance engineer named 'Kai Patel' and connect them to the Fair Housing Audit workflow." },
 ]
 
 function renderMarkdown(text: string) {
@@ -344,7 +344,7 @@ export function QueryPage() {
                 <div className="inline-flex items-center justify-center w-14 h-14 rounded-2xl bg-indigo-50 border border-indigo-200 mb-4">
                   <Zap size={24} className="text-indigo-500" />
                 </div>
-                <h2 className="text-lg font-semibold text-slate-800 mb-1.5">Ask anything about Nexus Corp</h2>
+                <h2 className="text-lg font-semibold text-slate-800 mb-1.5">Ask anything about Meridian Property Group</h2>
                 <p className="text-sm text-slate-400 max-w-xs leading-relaxed">
                   Select a sample query from the left, or type your own question below.
                 </p>

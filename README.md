@@ -2,6 +2,21 @@
 
 A Neo4j knowledge graph connecting **People → Products → Customers → Workflows → Decisions**, built from plain-text documents via Claude, and exposed via a REST API, a React UI, and an MCP server.
 
+Themed around **Meridian Property Group** — a PropTech SaaS company for residential and commercial property management — to demonstrate AI architecture patterns relevant to the property technology domain: lease management, maintenance workflows, fair housing compliance, and owner analytics.
+
+## Repository Layout
+
+```
+backend/        Python source (api.py, graph.py, seed.py, eval.py …) + prompts/
+docs/           Project documentation (USER_GUIDE, DEVELOPER_GUIDE, DESIGN_DECISIONS …)
+tests/          pytest test suite (unit + integration)
+scripts/        CI utility scripts (validate_prompts.py, check_eval_regression.py)
+UI/             React + Vite frontend
+.github/        GitHub Actions CI/CD workflows
+```
+
+**Detailed docs:** [`docs/USER_GUIDE.md`](docs/USER_GUIDE.md) · [`docs/DEVELOPER_GUIDE.md`](docs/DEVELOPER_GUIDE.md) · [`docs/DESIGN_DECISIONS.md`](docs/DESIGN_DECISIONS.md)
+
 ## Document Ingestion Pipeline
 
 The graph data originates from a plain-text company brief — the kind of document that already exists in any company's wiki or shared drive. A single script converts it into a queryable knowledge graph using Claude as the extraction engine.
@@ -226,17 +241,286 @@ FastAPI  POST /query
 | Time to first token (Anthropic) | 300 – 800 ms |
 | Streaming throughput | ~50 – 80 tokens / sec |
 
+## AI Architecture Features
+
+### Agentic Query Mode (`POST /query/agent`)
+
+Beyond the standard single-turn query, `/query/agent` runs a full **tool-calling agent loop**. Claude iteratively decides which graph tools to invoke, executes them, and reasons across results before producing a final answer — demonstrating the responder/thinker pattern described in modern agentic AI design.
+
+```
+User question
+    │
+    ▼
+Claude (tool_use turn)
+    ├─► search_graph("compliance workflow")   → entity list
+    ├─► get_entity("w4")                      → Fair Housing Audit details + connections
+    ├─► trace_decision_impact("d4")           → GDPR/CCPA blast radius
+    └─► [end_turn] synthesized answer
+```
+
+Five tools are available to the agent: `search_graph`, `get_entity`, `find_path`, `trace_decision_impact`, `run_cypher`. The SSE stream emits typed events so the UI can render each step as it happens:
+
+| Event type | What it carries |
+|------------|----------------|
+| `thinking` | Claude's intermediate reasoning text |
+| `tool_call` | Tool name + input chosen by Claude |
+| `tool_result` | Truncated result returned to Claude |
+| `text` | Final answer tokens |
+| `done` | Tool call count + total latency |
+
+---
+
+### Model Routing
+
+Every query is classified before an LLM is called:
+
+| Route | Trigger | Cost |
+|-------|---------|------|
+| **Direct** (no LLM) | List / count queries (`how many workflows`, `list all products`) | ~0 ms, $0 |
+| **Claude Haiku** | Simple single-entity lookups (≤12 words, no multi-hop indicators) | Fast, cheap |
+| **Claude Sonnet** | Complex reasoning: `impact`, `trace`, `depend`, `compliance`, `path`, etc. | Full quality |
+
+```python
+route_query("who owns the lease renewal workflow")
+# → "claude-haiku-4-5-20251001"
+
+route_query("trace the impact of the GDPR compliance decision on workflows")
+# → "claude-sonnet-4-6"
+```
+
+---
+
+### Hybrid BM25 Search
+
+All search operations — `/search`, the standard `/query` endpoint, and the agent's `search_graph` tool — use **BM25 lexical ranking** instead of simple substring matching.
+
+BM25 weighs terms by inverse document frequency and normalizes for document length, so a search for "compliance audit" ranks `Fair Housing Audit` above nodes that only contain one of the two words. The implementation is pure Python (no extra dependencies):
+
+```python
+hybrid_search_nodes("lease renewal compliance")
+# Scores every node's name + description + role + rationale against the query
+# Returns ranked results with IDF-weighted term frequency scoring
+```
+
+A `/search?mode=keyword` fallback is available for direct substring matching.
+
+---
+
+### LangSmith Tracing
+
+Full distributed tracing for every LLM call, tool execution, and routing decision via [LangSmith](https://smith.langchain.com). Enabled by three env vars — zero overhead when disabled.
+
+**What is traced:**
+
+| Component | How | LangSmith run type |
+|-----------|-----|--------------------|
+| Every agent-loop LLM call | `wrap_anthropic(AsyncAnthropic())` — patches `messages.create` automatically | `llm` |
+| Every tool execution | `@traceable` on `_execute_agent_tool` | `tool` |
+| Query routing decision | `@traceable` on `route_query` | `chain` |
+| Full agent run tree | `_run_agent_traced()` fires in background | `chain` (parent with nested children) |
+
+**Enable tracing** — add all three to `.env`, then restart the API:
+
+```bash
+LANGSMITH_API_KEY=your-key-here        # free key at smith.langchain.com
+LANGSMITH_PROJECT=cogni-graph          # project name in LangSmith UI
+LANGSMITH_TRACING_V2=true             # ← master switch: must be set or nothing traces
+```
+
+> **Important:** `LANGSMITH_TRACING_V2=true` is the master switch. Setting only `LANGSMITH_API_KEY` is not enough — all decorators and wrappers remain no-ops until this flag is present. The API must also be **restarted** after editing `.env` because `dotenv` loads vars once at process start.
+
+**Verified trace output** — one agent query produces these runs in LangSmith:
+
+| # | Run type | Name | What it captured |
+|---|----------|------|-----------------|
+| 1 | `llm` | ChatAnthropic | Turn 1 — LLM selected tool, inputs + output blocks, token counts |
+| 2 | `tool` | execute_graph_tool | Tool input + result (e.g. `search_graph("Lease Renewal")`) |
+| 3 | `llm` | ChatAnthropic | Turn 2 — next LLM decision |
+| 4 | `tool` | execute_graph_tool | Second tool call (e.g. `get_entity("w1")`) |
+| 5 | `llm` | ChatAnthropic | Final turn — stop reason `end_turn`, full answer text |
+
+**Full trace tree for a complex agent query:**
+
+```
+agent_query (chain)  ~36 s
+  ├─ route_query (chain)              — "claude-sonnet-4-6"
+  ├─ ChatAnthropic (llm)              — turn 1, tool_use
+  ├─ execute_graph_tool (tool)        — search_graph("GDPR")
+  ├─ execute_graph_tool (tool)        — trace_decision_impact("d4")
+  ├─ execute_graph_tool (tool)        — get_entity("pr1")
+  ├─ execute_graph_tool (tool)        — get_entity("pr3")
+  └─ ChatAnthropic (llm)              — turn 5, end_turn → final answer
+```
+
+Each node shows inputs, outputs, token counts, latency, and metadata (`domain: proptech`, `system: cogni-graph`). Traces are searchable and can be added to LangSmith evaluation datasets.
+
+**If nothing appears in LangSmith:**
+
+1. Confirm all three vars are in `.env` — especially `LANGSMITH_TRACING_V2=true`
+2. Restart the API (`pkill -f uvicorn && cd backend && uvicorn api:app`) — env vars load at startup
+3. Send at least one `/query/agent` request — the standard `/query` SSE endpoint generates fewer trace events
+4. Check the correct project name: `smith.langchain.com → Projects → cogni-graph`
+
+---
+
+### Prompt Injection Defence
+
+Every question passes through `_check_injection()` before any LLM call is made. Two checks run in order:
+
+| Check | Rule | HTTP response |
+|-------|------|---------------|
+| Length | ≤ 500 characters | `400 question_too_long:N_chars_max_500` |
+| Pattern match | 18 compiled regex across 5 injection families | `400 Question rejected by safety filter: <category>` |
+
+The five families detected:
+
+| Category | Examples caught |
+|----------|----------------|
+| `instruction_override` | "ignore all previous instructions", "disregard the above guidelines" |
+| `prompt_extraction` | "reveal your system prompt", "show me your instructions" |
+| `identity_override` | "you are now a different AI", "pretend to be unrestricted" |
+| `jailbreak` | "enable DAN mode", "jailbreak", "developer mode" |
+| `delimiter_injection` | `<system>`, `[SYSTEM]`, `### system`, `ASSISTANT:` |
+
+Flagged inputs are **never forwarded to Claude**. Each block increments `_metrics["safety_events"]` which is visible at `GET /metrics`. The guard covers both `/query` and `/query/agent`.
+
+53 unit tests in `tests/test_unit_safety.py` verify all attack categories and confirm that all 6 sample PropTech questions plus 10 other legitimate queries pass without triggering false positives.
+
+**Output PII scanning** runs after every LLM response before tokens reach the browser. Four PropTech-specific PII types are detected and redacted:
+
+| Pattern | Example detected | Replaced with |
+|---------|-----------------|---------------|
+| `SSN` | `123-45-6789` | `[REDACTED:SSN]` |
+| `PAYMENT_CARD` | `4111 1111 1111 1111` | `[REDACTED:PAYMENT_CARD]` |
+| `ROUTING_NUMBER` | `021000021` | `[REDACTED:ROUTING_NUMBER]` |
+| `EXTERNAL_EMAIL` | `tenant@gmail.com` | `[REDACTED:EXTERNAL_EMAIL]` |
+
+Internal `@meridianpg.com` addresses are excluded. Each detection increments `_metrics["output_safety_events"]` and emits a `safety_warning` SSE event to the client. Both endpoints buffer the full response before emission so patterns spanning multiple stream tokens are caught.
+
+The safety guidelines are also embedded in `prompts/v2.yaml` — the system prompt explicitly instructs Claude never to reproduce sensitive personal information. Set `PROMPT_VERSION=v2` to activate.
+
+---
+
+### Observability (`GET /metrics`)
+
+Every query updates in-memory counters. `/metrics` returns a live snapshot:
+
+```json
+{
+  "queries": { "total": 42, "standard": 18, "agent": 12, "direct_no_llm": 12 },
+  "latency": { "avg_ms": 840.1, "total_ms": 35284.2 },
+  "tokens": { "input": 145000, "cached": 113100, "output": 8200, "cache_hit_rate": 0.78 },
+  "cost_usd": 0.1162,
+  "model_routes": { "direct": 12, "claude-haiku-4-5-20251001": 14, "claude-sonnet-4-6": 16 },
+  "cache_hits": 31,
+  "errors": 0
+}
+```
+
+---
+
+### Cost Budget Enforcement
+
+A daily cost budget prevents runaway spend. Set `DAILY_COST_LIMIT_USD` in `.env` (default `$5.00`, set to `0` to disable):
+
+```bash
+DAILY_COST_LIMIT_USD=5.00
+```
+
+**How it works:**
+
+1. `_update_metrics()` recalculates `running_cost_usd` after every query using the token counters already in memory
+2. When `running_cost_usd ≥ DAILY_COST_LIMIT_USD`: sets `_metrics["budget_exceeded"] = True` and emits a `WARNING` log
+3. `route_query()` checks the flag **first** — if set, every query routes to `claude-haiku-4-5-20251001` regardless of complexity
+4. `GET /metrics` exposes the full budget state under a `"budget"` block
+5. `POST /admin/reset-budget` clears the flag without restarting the API
+
+```json
+"budget": {
+  "limit_usd": 5.0,
+  "running_cost_usd": 5.0124,
+  "exceeded": true,
+  "exceeded_at_usd": 5.0011,
+  "note": "All queries forced to claude-haiku-4-5-20251001. Call POST /admin/reset-budget to restore normal routing."
+}
+```
+
+---
+
+### CI/CD Pipeline
+
+Two GitHub Actions workflows enforce quality on every change:
+
+**`ci.yml`** — runs on every push and pull request to `main`:
+
+```
+syntax-and-unit   ── py_compile + 48 unit tests (~0.5 s, no services)
+prompt-validation ── validate all prompts/*.yaml structure and content
+        ↓ (both must pass before integration runs)
+integration ── Neo4j container → seed → 65 graph tests → start API → 63 API tests
+```
+
+No real Anthropic key is needed for the CI gate — all integration tests are marked `-m "not llm"`.
+
+**`eval-nightly.yml`** — runs daily at 06:00 UTC (and on manual dispatch):
+
+```
+Neo4j → seed → start API → python eval.py → check_eval_regression.py
+                                                      │
+                                   pass ── upload 90-day artifact
+                                   fail ── upload artifact + auto-create GitHub issue
+```
+
+Regression thresholds (`scripts/check_eval_regression.py`):
+
+| Check | Threshold |
+|-------|-----------|
+| Average entity recall | ≥ 0.85 |
+| Pass rate | ≥ 75% (6/8 cases) |
+| Zero-recall cases | 0 allowed |
+
+**GitHub Secrets required** (Settings → Secrets → Actions):
+- `ANTHROPIC_API_KEY` — for nightly eval (LLM calls)
+- `LANGSMITH_API_KEY` — optional, for nightly tracing
+
+---
+
+### Evaluation Harness (`eval.py`)
+
+Offline eval suite with 8 PropTech test cases. Each case specifies a question and a list of expected entities; the harness hits the live API, scores **entity recall** (pass threshold: ≥0.6), and prints a results table with latency and model routing breakdown.
+
+```bash
+python eval.py                 # standard /query endpoint
+python eval.py --agent         # agentic /query/agent endpoint
+python eval.py --verbose       # print full answer for each case
+```
+
+```
+  [tc_01] workflow_ownership     PASS  recall=1.00    820 ms  [claude-haiku-4-5-20251001]
+  [tc_02] compliance             PASS  recall=0.75   1240 ms  [claude-sonnet-4-6]
+  [tc_03] customer_products      PASS  recall=1.00    390 ms  [direct]
+  ...
+  Pass rate   : 8/8 (100%)
+  Avg recall  : 0.91
+  Avg latency : 780 ms
+```
+
+---
+
 ## Stack
 
 | Layer | Tech |
 |-------|------|
 | Graph DB | Neo4j 5.x (Docker) |
 | API | FastAPI (Python) |
-| LLM | Claude Sonnet via Anthropic SDK |
+| LLM | Claude Sonnet / Haiku via Anthropic SDK (model-routed) |
 | UI | React 18 + Vite + TypeScript + Tailwind |
 | Graph viz | react-force-graph-2d (D3 canvas) |
 | MCP Server | `mcp` Python SDK (FastMCP) |
 | Graph data | Extracted from `nexus_corp_brief.md` via `doc_to_graph.py` + Claude |
+| Search | BM25 lexical ranking (pure Python, no extra deps) |
+| Tracing | LangSmith (`wrap_anthropic` + `@traceable`) |
+| CI/CD | GitHub Actions — push gate + nightly eval with regression alerting |
 
 ## Quickstart
 
@@ -259,28 +543,73 @@ Neo4j browser: http://localhost:7474 (neo4j / companygraph123)
 
 ### 3. Seed + run the API
 
+All backend code lives in `backend/`. Run commands from **project root**:
+
 ```bash
-python api.py
-# Automatically seeds the graph on first run, then serves at http://localhost:8000
+# Seed the graph
+python backend/seed.py
+
+# Start the API (run from backend/ so uvicorn finds api.py)
+cd backend && uvicorn api:app --host 0.0.0.0 --port 8000 --reload
 ```
 
-Or seed separately:
+Or extract the graph from source document using Claude:
 
 ```bash
-python seed.py           # fast static seed (no API key needed)
-uvicorn api:app --reload
-```
-
-Or extract the graph from the source document using Claude:
-
-```bash
-python doc_to_graph.py --clear   # document → Claude extraction → Neo4j
-uvicorn api:app --reload
+cd backend && python doc_to_graph.py --clear   # document → Claude → Neo4j
+cd backend && uvicorn api:app --reload
 ```
 
 API docs: http://localhost:8000/docs
 
-### 4. Use the MCP server with Claude Code
+### 4. Try the new endpoints
+
+```bash
+# Standard query (full graph in cached system prompt, model-routed)
+curl -N -X POST http://localhost:8000/query \
+  -H "Content-Type: application/json" \
+  -d '{"question": "Who owns the Lease Renewal workflow?"}'
+
+# Agentic query (tool-calling loop, streams tool_call/tool_result/text events)
+curl -N -X POST http://localhost:8000/query/agent \
+  -H "Content-Type: application/json" \
+  -d '{"question": "Trace the compliance impact of the GDPR overhaul decision."}'
+
+# Hybrid BM25 search
+curl "http://localhost:8000/search?q=fair+housing+compliance"
+
+# Observability snapshot
+curl http://localhost:8000/metrics
+```
+
+### 5. Enable LangSmith tracing (optional)
+
+Get a free API key at **smith.langchain.com**, then add to `.env`:
+
+```bash
+LANGSMITH_API_KEY=your-key-here
+LANGSMITH_PROJECT=cogni-graph
+LANGSMITH_TRACING_V2=true
+```
+
+Restart the API — every agent query will now appear in LangSmith with a full trace tree showing LLM calls, tool executions, routing decisions, token counts, and latency per step. Safe to omit: all decorators and wrappers are no-ops without the key.
+
+### 7. Run the evaluation harness
+
+```bash
+# Standard endpoint (model-routed, fast)
+python backend/eval.py
+
+# Agentic endpoint (tool-calling loop, more thorough)
+python backend/eval.py --agent
+
+# Verbose: print full answer for each test case
+python backend/eval.py --verbose
+```
+
+Results are saved to `backend/eval_results/`.
+
+### 8. Use the MCP server with Claude Code
 
 The `.mcp.json` file in this directory auto-registers the MCP server when you open Claude Code here. Claude will have access to these tools:
 
@@ -298,7 +627,7 @@ The `.mcp.json` file in this directory auto-registers the MCP server when you op
 | `connect_entities` | Create a relationship between two entities |
 | `run_cypher` | Execute raw Cypher for advanced queries |
 
-### 5. Claude Desktop config (optional)
+### 9. Claude Desktop config (optional)
 
 Add to `~/Library/Application Support/Claude/claude_desktop_config.json`:
 
@@ -333,18 +662,31 @@ Add to `~/Library/Application Support/Claude/claude_desktop_config.json`:
 
 ## Seed data overview
 
-**Nexus Corp** — fictional B2B SaaS company
+**Meridian Property Group** — PropTech SaaS for residential and commercial property management
 
-- 8 people: Sarah Chen (CEO), Marcus Rivera (CTO), Priya Patel (VP Product), Alex Kim, Jordan Lee, Diana Santos, Tom Mitchell, Aisha Okafor
-- 4 products: Nexus Analytics, Nexus API Platform, Nexus Connect (beta), Nexus Mobile (deprecated)
-- 5 customers: TechFlow Inc, RetailPro Corp, HealthFirst, StartupX, GlobalShip Ltd
-- 6 workflows: Customer Onboarding, Sales Pipeline, Bug Triage, Feature Release, Data Migration, Quarterly Planning
-- 6 decisions: Deprecate Mobile, Enter Healthcare, Migrate to K8s, Freemium Tier, GDPR Overhaul, DataVault Partnership
+- 8 people: Elena Rodriguez (CEO), James Park (VP Operations), Sofia Nguyen (Head of Product), Marcus Webb (Senior Engineer), Priya Okafor (Engineer), David Chen (Director of Compliance), Rachel Torres (Leasing Director), Andre Williams (Customer Success Lead)
+- 5 products: LeaseTrack (active), MaintenanceOS (active), TenantPay (active), OwnerInsight (beta), LegacyPortal (deprecated)
+- 5 customers: Sunstone Residential (3,200 units, enterprise), Harbor View Properties (1,800 units, enterprise), Metro Living Group (900 units, mid-market), Summit HOA (320 units, SMB), Apex Commercial (2M sqft, enterprise)
+- 6 workflows: Lease Renewal, Move-In Inspection, Work Order Processing, Fair Housing Audit, Vendor Onboarding, Quarterly Owner Reporting
+- 6 decisions: Deprecate LegacyPortal, Enter Commercial Market, Migrate to Kubernetes, GDPR and CCPA Compliance Overhaul, Launch OwnerInsight Beta, Outsource Vendor Network
+
+### Why PropTech
+
+The domain was chosen to demonstrate AI patterns relevant to property technology:
+
+| PropTech concern | Graph representation |
+|-----------------|---------------------|
+| Lease compliance | `Lease Renewal` workflow →[:DEPENDS_ON]→ `Fair Housing Audit` |
+| Regulatory impact | `GDPR and CCPA Compliance Overhaul` →[:AFFECTS]→ `LeaseTrack`, `TenantPay`, `Lease Renewal` |
+| Vendor risk | `Work Order Processing` →[:DEPENDS_ON]→ `Vendor Onboarding` |
+| Customer analytics | `OwnerInsight` beta co-developed with `Sunstone Residential`, `Harbor View Properties` |
+| Product deprecation | `Deprecate LegacyPortal` decision traced to affected customers and workflows |
 
 ## Example Claude queries (via MCP)
 
-> "Who is involved in the Feature Release workflow?"  
-> "Trace the impact of the decision to introduce a freemium tier."  
-> "Find the connection between Sarah Chen and StartupX."  
-> "Which products does our largest customer use and who built them?"  
-> "Add a new engineer named 'Mei Zhang' and connect her to the API Platform."
+> "Who owns the Lease Renewal workflow and who else is involved?"  
+> "Trace the full impact of the GDPR and CCPA compliance overhaul."  
+> "Find the connection between Elena Rodriguez and Apex Commercial."  
+> "Which products does Sunstone Residential use and who built them?"  
+> "What workflows would be at risk if Marcus Webb left the company?"  
+> "Add a new compliance engineer named 'Kai Patel' and connect them to the Fair Housing Audit workflow."

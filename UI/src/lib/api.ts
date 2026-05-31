@@ -34,9 +34,39 @@ async function del<T>(path: string): Promise<T> {
   return res.json()
 }
 
+export interface Metrics {
+  prompt_version: string
+  queries: { total: number; standard: number; agent: number; direct_no_llm: number }
+  latency: { avg_ms: number; total_ms: number }
+  tokens: { input: number; cached: number; output: number; cache_hit_rate: number }
+  cost_usd: number
+  model_routes: Record<string, number>
+  cache_hits: number
+  errors: number
+  safety_events: number
+  output_safety_events: number
+  budget: { limit_usd: number; running_cost_usd: number; exceeded: boolean; note: string }
+}
+
+export interface LangSmithRun {
+  id: string
+  name: string
+  run_type: string
+  status: string
+  latency_s: number | null
+  input_tokens: number | null
+  output_tokens: number | null
+  start_time: string | null
+}
+
 export const api = {
   health: () => get<{ status: string; stats: GraphStats }>('/'),
   fullGraph: () => get<FullGraph>('/graph'),
+  metrics: () => get<Metrics>('/metrics'),
+  langsmithRuns: (limit = 10) =>
+    get<{ enabled: boolean; project?: string; runs: LangSmithRun[]; error?: string }>(
+      `/langsmith/runs?limit=${limit}`
+    ),
   listNodes: (type?: NodeLabel, limit = 200) =>
     get<GraphNode[]>(`/nodes?${type ? `type=${type}&` : ''}limit=${limit}`),
   getNode: (id: string) => get<NodeWithConnections>(`/nodes/${id}`),
