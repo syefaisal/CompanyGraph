@@ -1,6 +1,6 @@
 import { useState, useMemo } from 'react'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
-import { Plus, RefreshCw, Network, GitMerge, Zap, FileText } from 'lucide-react'
+import { Plus, RefreshCw, Network, GitMerge, Zap, FileText, BarChart2 } from 'lucide-react'
 import { api } from './lib/api'
 import { GraphCanvas } from './components/GraphCanvas'
 import { NodePanel } from './components/NodePanel'
@@ -10,9 +10,10 @@ import { FilterChips } from './components/FilterChips'
 import { AddNodeModal } from './components/AddNodeModal'
 import { QueryPage } from './components/QueryPage'
 import { SourcePage } from './components/SourcePage'
+import { ObservabilityPage } from './components/ObservabilityPage'
 import type { FGNode, NodeLabel } from './types'
 
-type Tab = 'graph' | 'query' | 'source'
+type Tab = 'graph' | 'query' | 'source' | 'observe'
 
 export default function App() {
   const qc = useQueryClient()
@@ -63,7 +64,7 @@ export default function App() {
 
         {/* Tabs */}
         <div className="flex items-center gap-0.5 bg-slate-100 rounded-lg p-1">
-          {([['graph', GitMerge, 'Graph'], ['query', Zap, 'Query'], ['source', FileText, 'Source']] as const).map(([id, Icon, label]) => (
+          {([['graph', GitMerge, 'Graph'], ['query', Zap, 'Query'], ['observe', BarChart2, 'Observe'], ['source', FileText, 'Source']] as const).map(([id, Icon, label]) => (
             <button
               key={id}
               onClick={() => setTab(id)}
@@ -110,6 +111,13 @@ export default function App() {
       {tab === 'query' && (
         <div className="flex-1 overflow-hidden">
           <QueryPage />
+        </div>
+      )}
+
+      {/* ── Observe page ───────────────────────────────────────────── */}
+      {tab === 'observe' && (
+        <div className="flex-1 overflow-hidden">
+          <ObservabilityPage />
         </div>
       )}
 

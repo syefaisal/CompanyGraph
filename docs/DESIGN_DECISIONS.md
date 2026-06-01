@@ -39,7 +39,8 @@
 | 3.2 | **Agent tool definitions** | Inline tool schemas in each endpoint, external JSON config, framework-generated | **Declarative tool schema list (`AGENT_TOOLS`) + single `_execute_agent_tool()` dispatcher** | Tool definitions are pure Python dictionaries — versionable, testable, and readable without running the server. The dispatcher is a single function covering all 5 tools, making it straightforward to add tools or change behaviour without touching the agent loop. | *"Reusable RAG pipelines; modular reusable coding practices"* |
 | 3.3 | **API framework** | Flask, Django REST Framework, raw ASGI | **FastAPI** | Async-native (matches async Anthropic SDK streams). Auto-generates OpenAPI docs at `/docs`. Pydantic request validation. `StreamingResponse` is first-class. Minimal boilerplate — the entire API is one file. | *"Designing and operating distributed, cloud-native systems"* |
 | 3.4 | **Frontend stack** | Vue, plain HTML/JS, Next.js, Streamlit | **React 18 + Vite + TypeScript + Tailwind** | Matches the production standard for AI copilot UIs. TypeScript enforces contracts between the SSE event schema and the React state. Vite proxy eliminates CORS config in dev. Force-directed graph (`react-force-graph-2d`) provides an immediate visual of the knowledge graph structure. | *"Common UI components and design patterns for AI copilots and agents"* |
-| 3.5 | **Infrastructure** | Managed cloud Neo4j (Aura), local SQLite graph simulation, in-memory graph | **Neo4j in Docker (`docker compose up -d`)** | Portable — anyone can run the full stack with one command. Neo4j 5.x community edition includes the full Cypher engine and APOC procedures. Swap to a cloud-hosted instance in production with a one-line env var change. Demonstrates **containerization** fluency. | *"Containerization and orchestration (Docker, Kubernetes)"* |
+| 3.5 | **Model selection visibility** | No UI feedback on routing, log-only observability | **Routing Decision Badge + Observe tab** | Every response shows a colour-coded pill with the tier (Direct/Haiku/Sonnet) and exact reason (`'compliance' detected`, `simple lookup`, `budget limit reached`). The Observe tab shows a live bar chart of tier distribution, token breakdown, session cost, and a LangSmith trace feed — auto-refreshing every 10 s. `_route_explanation()` generates the reason and travels in the `done` SSE event as `route_reason`. `GET /langsmith/runs` is server-side to keep the API key out of the browser. | *"Model selection strategy — communicating complex AI concepts to non-technical partners; observability, logging"* |
+| 3.6 | **Infrastructure** | Managed cloud Neo4j (Aura), local SQLite graph simulation, in-memory graph | **Neo4j in Docker (`docker compose up -d`)** | Portable — anyone can run the full stack with one command. Neo4j 5.x community edition includes the full Cypher engine and APOC procedures. Swap to a cloud-hosted instance in production with a one-line env var change. Demonstrates **containerization** fluency. | *"Containerization and orchestration (Docker, Kubernetes)"* |
 
 ---
 
@@ -78,7 +79,7 @@
 | RAG, hybrid search, knowledge graphs, semantic caching | 1.1, 2.1, 2.2, 2.3, 2.4 |
 | Real-time streaming | 1.5 |
 | Reusable RAG pipelines and ingestion frameworks | 1.6, 3.1 |
-| Common UI components for AI copilots | 3.4 |
+| Common UI components for AI copilots | 3.4, 3.5 |
 | Modular reusable agentic back-end | 3.1, 3.2 |
 | Prompt design and versioning | 1.4, 2.1 |
 | Model and retrieval evaluation | 4.1 |
@@ -89,7 +90,7 @@
 | Model routing, distillation, caching | 1.3, 2.4, 5.2 |
 | Right-sizing / build-vs-buy | 5.3, 5.6 |
 | SLAs / SLOs / error budgets | 5.3, 5.5 |
-| Containerization (Docker) | 3.5 |
+| Containerization (Docker) | 3.6 |
 | PropTech domain expertise | 2.5, 4.3 |
 | Code quality / test standards | 4.4 |
 | Data quality risk mitigation | 4.5 |

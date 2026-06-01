@@ -75,8 +75,9 @@ CompanyGraph/
 │       ├── App.tsx          # Tab routing (Graph / Query / Source)
 │       ├── components/
 │       │   ├── GraphCanvas.tsx    # Force-directed D3 graph
-│       │   ├── QueryPage.tsx      # Chat UI + SSE streaming + human feedback
+│       │   ├── QueryPage.tsx      # Chat UI + SSE streaming + routing decision badge + human feedback
 │       │   ├── SourcePage.tsx     # Raw source document viewer
+│       │   ├── ObservabilityPage.tsx # Observe tab — model routing bars, metrics cards, LangSmith trace feed
 │       │   ├── SearchBar.tsx      # Node search with autocomplete
 │       │   ├── NodePanel.tsx      # Selected node detail sidebar
 │       │   └── FilterChips.tsx    # Entity type toggle legend
@@ -310,6 +311,24 @@ def _try_direct_answer(question: str) -> Optional[str]:
 Handles `"list all <type>"`, `"show all <type>"`, `"how many <type>"` patterns. Returns a formatted string if matched, `None` otherwise. No LLM call — reads from Neo4j directly.
 
 **To add a new direct pattern:** extend the `if`/`elif` chain at the top of `_try_direct_answer`.
+
+### Routing explanation
+
+```python
+def _route_explanation(question: str) -> str:
+```
+
+Returns a short human-readable reason for the routing decision. Included in every `done` SSE event as `route_reason` and displayed in the UI as the **Routing Decision Badge**.
+
+| Route | Example `route_reason` |
+|-------|------------------------|
+| Direct (no LLM) | `"direct answer — no LLM"` |
+| Budget override | `"budget limit reached"` |
+| Haiku | `"simple lookup"` |
+| Sonnet — keyword | `"'compliance' detected"` |
+| Sonnet — length | `"15 words > 12"` |
+
+**To customise routing reason text:** edit `_route_explanation()` in `backend/api.py`. The reason flows through the `done` SSE event → `QueryPage.tsx` → Routing Decision Badge.
 
 ### In-memory metrics
 
@@ -774,6 +793,32 @@ Token counts are **not** reset — running cost continues to accumulate.
   "budget_limit_usd": 5.0
 }
 ```
+
+#### `GET /langsmith/runs`
+Returns recent runs from the LangSmith `cogni-graph` project. Used by the Observe tab.  
+Query params: `limit` (1–50, default 10).
+
+```json
+{
+  "enabled": true,
+  "project": "cogni-graph",
+  "runs": [
+    {
+      "id": "abc123",
+      "name": "agent_query",
+      "run_type": "chain",
+      "status": "success",
+      "latency_s": 36.2,
+      "input_tokens": 6800,
+      "output_tokens": 920,
+      "start_time": "2026-05-31T18:20:00+00:00"
+    }
+  ]
+}
+```
+
+Returns `{"enabled": false, "runs": []}` when `LANGSMITH_API_KEY` is not set.  
+Called server-side to keep the API key out of the browser.
 
 ### Graph
 

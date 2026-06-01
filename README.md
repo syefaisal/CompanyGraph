@@ -306,6 +306,34 @@ A `/search?mode=keyword` fallback is available for direct substring matching.
 
 ---
 
+### Observe Tab — Model Selection Strategy & Live Metrics
+
+The **Observe** tab is a real-time production-AI dashboard that makes the model selection strategy visible and explains *why* every routing decision was made.
+
+**Routing Decision Badge** — after every query response, a colour-coded pill appears:
+
+| Badge | When shown | JD signal |
+|-------|-----------|-----------|
+| `⚡ Direct · direct answer — no LLM · 0.1s` | List/count queries | Zero LLM cost path |
+| `⚡ Haiku · simple lookup · 1.8s` | Short entity questions | Right-sizing to cheap model |
+| `⚡ Sonnet · 'compliance' detected · 6.2s · 3 tool calls` | Complex reasoning | Full-capability model when needed |
+
+**Observe tab sections:**
+
+| Section | What it shows |
+|---------|--------------|
+| **Key Metrics** | Total queries (standard / agent / direct), avg latency, session cost, safety events |
+| **Budget Status** | Progress bar vs. daily limit, amber alert when exceeded |
+| **Model Selection Strategy** | Horizontal bar per tier with percentage, colour code, and one-line description of why each tier exists. Token breakdown (input / cached / output) below |
+| **LangSmith Trace Feed** | Last 15 runs with name, run type (chain/llm/tool), status, latency, token counts. Auto-refreshes every 10 s |
+
+**Backend additions:**
+- `_route_explanation(question)` — returns the human-readable routing reason for each query
+- `route_reason` field added to the `done` SSE event on all endpoints
+- `GET /langsmith/runs?limit=N` — server-side LangSmith query (keeps API key server-side, avoids CORS)
+
+---
+
 ### LangSmith Tracing
 
 Full distributed tracing for every LLM call, tool execution, and routing decision via [LangSmith](https://smith.langchain.com). Enabled by three env vars — zero overhead when disabled.
@@ -521,6 +549,7 @@ python eval.py --verbose       # print full answer for each case
 | Search | BM25 lexical ranking (pure Python, no extra deps) |
 | Tracing | LangSmith (`wrap_anthropic` + `@traceable`) |
 | CI/CD | GitHub Actions — push gate + nightly eval with regression alerting |
+| Observability UI | Observe tab — model routing distribution, LangSmith trace feed, budget status |
 
 ## Quickstart
 

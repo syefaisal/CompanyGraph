@@ -92,6 +92,46 @@ The table below maps each sample question to the JD-aligned architectural capabi
 | Prompt injection defence (input) | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
 | Output PII scanning & redaction | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
 | Safety guidelines in system prompt | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
+| Routing decision badge (why this model) | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
+| Observe tab (live metrics + LangSmith feed) | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
+
+---
+
+## Observe Tab — Model Selection Strategy & Live Metrics
+
+The **Observe** tab (fourth tab in the header) is a real-time dashboard that makes the model selection strategy and LangSmith traces visible without leaving the app.
+
+### Routing Decision Badge
+
+Every assistant response in the Query tab shows a colour-coded pill immediately after streaming completes:
+
+| Badge colour | Tier | Trigger | What it means |
+|-------------|------|---------|---------------|
+| 🟢 Green | **Direct** | List/count questions | Neo4j answered directly — zero LLM cost |
+| 🔵 Blue | **Haiku** | Short questions, no complexity keywords | Fast, cheap model for simple lookups |
+| 🟣 Violet | **Sonnet** | `compliance`, `impact`, `trace`, >12 words, etc. | Full reasoning model for complex multi-hop queries |
+
+The badge also shows the exact routing reason (e.g. `'compliance' detected`) and elapsed time.
+
+### Observe Tab Sections
+
+**Key Metrics** — four cards refreshed every 10 s:
+- Total queries with standard / agent / direct breakdown
+- Average latency across all queries
+- Session cost (USD) and cache hit rate
+- Safety events (input injection blocks + output PII detections)
+
+**Budget Status** — progress bar showing `$X.XX / $5.00` spend. Turns amber when the daily limit is exceeded and shows the reset instruction.
+
+**Model Selection Strategy** — horizontal bar chart per routing tier:
+```
+Direct  ████░░░░░░░░░░░░░░░░░  28%   List/count queries — zero LLM cost
+Haiku   ████████░░░░░░░░░░░░░  38%   Simple entity lookups — fast and cheap
+Sonnet  ████████████░░░░░░░░░  34%   Complex multi-hop reasoning
+```
+Below the bars: token breakdown — input, cached, and output tokens with cache hit rate.
+
+**LangSmith Trace Feed** — table of last 15 runs pulled from the `cogni-graph` project via `GET /langsmith/runs`. Shows run name, type badge (chain/llm/tool), status, latency, and token counts. Updates every 10 s. Shows setup instructions when `LANGSMITH_API_KEY` is absent.
 
 ---
 

@@ -11,16 +11,80 @@ interface Message {
   error?: boolean
   feedback?: 'approved' | 'flagged'
   reviewComment?: string
+  model?: string
+  routeReason?: string
+  latencyMs?: number
+  toolCalls?: number
 }
 
-const SUGGESTIONS = [
-  { icon: '👥', text: 'Who owns the Lease Renewal workflow and who else is involved?' },
-  { icon: '⚖️', text: 'Trace the full impact of the GDPR and CCPA compliance overhaul.' },
-  { icon: '🔗', text: 'Find the connection between Elena Rodriguez and Apex Commercial.' },
-  { icon: '🏢', text: 'Which products does Sunstone Residential use and who built them?' },
-  { icon: '⚠️', text: 'What workflows would be at risk if Marcus Webb left the company?' },
-  { icon: '➕', text: "Add a new compliance engineer named 'Kai Patel' and connect them to the Fair Housing Audit workflow." },
+type Tier = 'direct' | 'haiku' | 'sonnet'
+
+interface Suggestion {
+  icon: string
+  text: string
+  tier: Tier
+}
+
+const TIER_META: Record<Tier, { label: string; color: string; bg: string; border: string; dot: string; desc: string }> = {
+  direct: {
+    label: 'Direct',
+    color: 'text-emerald-700',
+    bg: 'bg-emerald-50',
+    border: 'border-emerald-200',
+    dot: 'bg-emerald-500',
+    desc: 'No LLM · answered from Neo4j · ~0 ms · $0',
+  },
+  haiku: {
+    label: 'Haiku',
+    color: 'text-sky-700',
+    bg: 'bg-sky-50',
+    border: 'border-sky-200',
+    dot: 'bg-sky-500',
+    desc: 'Fast model · simple lookups · low cost',
+  },
+  sonnet: {
+    label: 'Sonnet',
+    color: 'text-violet-700',
+    bg: 'bg-violet-50',
+    border: 'border-violet-200',
+    dot: 'bg-violet-500',
+    desc: 'Full model · multi-hop reasoning',
+  },
+}
+
+const SUGGESTIONS: Suggestion[] = [
+  // ── Direct: list/count queries bypass the LLM entirely ──────────────────
+  { tier: 'direct', icon: '📋', text: 'list all workflows' },
+  { tier: 'direct', icon: '🔢', text: 'how many customers do we have' },
+  { tier: 'direct', icon: '📦', text: 'list all products' },
+
+  // ── Haiku: simple entity lookups — short questions, no complexity keywords
+  { tier: 'haiku', icon: '👤', text: 'Who is David Chen and what does he work on?' },
+  { tier: 'haiku', icon: '🏢', text: 'Which products does Sunstone Residential use and who built them?' },
+  { tier: 'haiku', icon: '💳', text: 'What is TenantPay and what is its current status?' },
+
+  // ── Sonnet: complex multi-hop reasoning — compliance, impact, risk, paths
+  { tier: 'sonnet', icon: '👥', text: 'Who owns the Lease Renewal workflow and who else is involved?' },
+  { tier: 'sonnet', icon: '⚖️', text: 'Trace the full impact of the GDPR and CCPA compliance overhaul.' },
+  { tier: 'sonnet', icon: '🔗', text: 'Find the connection between Elena Rodriguez and Apex Commercial.' },
+  { tier: 'sonnet', icon: '⚠️', text: 'What workflows would be at risk if Marcus Webb left the company?' },
+  { tier: 'sonnet', icon: '💥', text: 'What is the blast radius if the Work Order Processing workflow breaks?' },
+  { tier: 'sonnet', icon: '➕', text: "Add a new compliance engineer named 'Kai Patel' and connect them to the Fair Housing Audit workflow." },
 ]
+
+const SUGGESTION_GROUPS = (Object.keys(TIER_META) as Tier[]).map((tier) => ({
+  tier,
+  meta: TIER_META[tier],
+  items: SUGGESTIONS.filter((s) => s.tier === tier),
+}))
+
+function modelLabel(model?: string) {
+  if (!model) return null
+  if (model === 'direct') return { short: 'Direct', color: 'bg-emerald-50 text-emerald-700 border-emerald-200' }
+  if (model.includes('haiku')) return { short: 'Haiku', color: 'bg-sky-50 text-sky-700 border-sky-200' }
+  if (model.includes('sonnet')) return { short: 'Sonnet', color: 'bg-violet-50 text-violet-700 border-violet-200' }
+  return { short: model, color: 'bg-slate-50 text-slate-600 border-slate-200' }
+}
 
 function renderMarkdown(text: string) {
   return text.split('\n').map((line, i) => {
@@ -171,7 +235,14 @@ export function QueryPage() {
               setMessages((prev) => {
                 const next = [...prev]
                 const last = next[next.length - 1]
-                if (last?.role === 'assistant') next[next.length - 1] = { ...last, streaming: false }
+                if (last?.role === 'assistant') next[next.length - 1] = {
+                  ...last,
+                  streaming: false,
+                  model: event.model,
+                  routeReason: event.route_reason,
+                  latencyMs: event.latency_ms,
+                  toolCalls: event.tool_calls,
+                }
                 return next
               })
             } else if (event.type === 'error') {
@@ -246,34 +317,45 @@ export function QueryPage() {
         {/* ── Samples tab ── */}
         {sideTab === 'queries' && (
           <>
-            <div className="px-4 py-2.5 border-b border-slate-100">
-              <p className="text-xs text-slate-400">Click any to send</p>
+            <div className="px-4 py-2 border-b border-slate-100">
+              <p className="text-[10px] text-slate-400 uppercase tracking-wide font-medium">Model selection strategy</p>
             </div>
-            <div className="flex-1 overflow-y-auto py-2">
-              {SUGGESTIONS.map((s) => {
-                const isActive = lastAsked === s.text
-                return (
-                  <button
-                    key={s.text}
-                    onClick={() => ask(s.text)}
-                    disabled={loading}
-                    className={`w-full flex items-start gap-2.5 text-left px-3 py-2.5 transition-all duration-150 group border-r-2
-                      ${isActive ? 'bg-indigo-50 border-indigo-500' : 'border-transparent hover:bg-slate-50'}
-                      ${loading ? 'opacity-50 cursor-not-allowed' : 'cursor-pointer'}
-                    `}
-                  >
-                    <span className="text-base leading-none mt-0.5 shrink-0">{s.icon}</span>
-                    <span className={`text-xs leading-snug transition-colors ${
-                      isActive ? 'text-indigo-700 font-medium' : 'text-slate-600 group-hover:text-slate-900'
-                    }`}>
-                      {s.text}
-                    </span>
-                    <ChevronRight size={11} className={`shrink-0 mt-0.5 ml-auto transition-opacity ${
-                      isActive ? 'text-indigo-400 opacity-100' : 'text-slate-300 opacity-0 group-hover:opacity-100'
-                    }`} />
-                  </button>
-                )
-              })}
+            <div className="flex-1 overflow-y-auto">
+              {SUGGESTION_GROUPS.map(({ tier, meta, items }) => (
+                <div key={tier} className="py-1">
+                  {/* Tier header */}
+                  <div className={`mx-3 my-1.5 flex items-center gap-2 px-2.5 py-1.5 rounded-lg ${meta.bg} border ${meta.border}`}>
+                    <span className={`w-1.5 h-1.5 rounded-full ${meta.dot} shrink-0`} />
+                    <span className={`text-[10px] font-bold uppercase tracking-wide ${meta.color}`}>{meta.label}</span>
+                    <span className={`text-[10px] ${meta.color} opacity-70 ml-auto text-right leading-tight`}>{meta.desc}</span>
+                  </div>
+                  {/* Questions in this tier */}
+                  {items.map((s) => {
+                    const isActive = lastAsked === s.text
+                    return (
+                      <button
+                        key={s.text}
+                        onClick={() => ask(s.text)}
+                        disabled={loading}
+                        className={`w-full flex items-start gap-2 text-left px-3 py-2 transition-all duration-150 group border-r-2
+                          ${isActive ? 'bg-indigo-50 border-indigo-500' : 'border-transparent hover:bg-slate-50'}
+                          ${loading ? 'opacity-50 cursor-not-allowed' : 'cursor-pointer'}
+                        `}
+                      >
+                        <span className="text-sm leading-none mt-0.5 shrink-0">{s.icon}</span>
+                        <span className={`text-xs leading-snug transition-colors ${
+                          isActive ? 'text-indigo-700 font-medium' : 'text-slate-600 group-hover:text-slate-900'
+                        }`}>
+                          {s.text}
+                        </span>
+                        <ChevronRight size={10} className={`shrink-0 mt-0.5 ml-auto transition-opacity ${
+                          isActive ? 'text-indigo-400 opacity-100' : 'text-slate-300 opacity-0 group-hover:opacity-100'
+                        }`} />
+                      </button>
+                    )
+                  })}
+                </div>
+              ))}
             </div>
           </>
         )}
@@ -395,6 +477,30 @@ export function QueryPage() {
                           )}
                         </div>
                       )}
+
+                      {/* Routing decision badge — shown after streaming completes */}
+                      {msg.role === 'assistant' && !msg.streaming && !msg.error && msg.model && (() => {
+                        const ml = modelLabel(msg.model)
+                        if (!ml) return null
+                        return (
+                          <div className="mt-2.5 flex items-center gap-1.5 flex-wrap">
+                            <span className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-semibold border ${ml.color}`}>
+                              ⚡ {ml.short}
+                            </span>
+                            {msg.routeReason && (
+                              <span className="text-[10px] text-slate-400">
+                                {msg.routeReason}
+                              </span>
+                            )}
+                            {msg.latencyMs && (
+                              <span className="text-[10px] text-slate-400 ml-auto">
+                                {(msg.latencyMs / 1000).toFixed(1)}s
+                                {msg.toolCalls ? ` · ${msg.toolCalls} tool call${msg.toolCalls !== 1 ? 's' : ''}` : ''}
+                              </span>
+                            )}
+                          </div>
+                        )
+                      })()}
 
                       {/* Human review controls — assistant only, after streaming */}
                       {msg.role === 'assistant' && !msg.streaming && !msg.error && (

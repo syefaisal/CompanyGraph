@@ -21,7 +21,8 @@
       "Bash(git reset *)",
       "Bash(git mv *)",
       "Bash(sed -i '' -e 's|python seed\\\\.py # clears existing data and reloads|python backend/seed.py # clears existing data and reloads|g' -e 's|Seed PropTech graph \\(python seed\\\\.py\\)|Seed PropTech graph \\(python backend/seed.py\\)|g' docs/DEVELOPER_GUIDE.md)",
-      "Bash(sed -i '' -e 's|- \\\\[ \\\\] `python seed\\\\.py`|- [ ] `python backend/seed.py`|g' -e 's|^python eval\\\\.py$|python backend/eval.py|g' docs/VIDEO_SCRIPT.md)"
+      "Bash(sed -i '' -e 's|- \\\\[ \\\\] `python seed\\\\.py`|- [ ] `python backend/seed.py`|g' -e 's|^python eval\\\\.py$|python backend/eval.py|g' docs/VIDEO_SCRIPT.md)",
+      "Bash(curl -s http://localhost:8000/langsmith/runs)"
     ]
   },
   "disabledMcpjsonServers": [
