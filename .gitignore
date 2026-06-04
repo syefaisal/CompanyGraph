@@ -24,3 +24,8 @@ Thumbs.db
 .idea/
 .vscode/
 *.swp
+
+# Private — not for version control
+INTERVIEW_PREP.md
+eval_results/
+backend/eval_results/

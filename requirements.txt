@@ -1,3 +1,6 @@
+pytest>=8.0
+langsmith>=0.1.0
+pyyaml>=6.0
 fastapi==0.115.5
 uvicorn[standard]==0.32.1
 neo4j==5.26.0
@@ -6,3 +9,4 @@ mcp[cli]==1.9.1
 httpx==0.28.1
 pydantic==2.10.3
 anthropic>=0.49.0
+sentence-transformers>=3.0.0

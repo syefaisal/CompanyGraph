@@ -1,8 +1,18 @@
 import { useState, useRef, useEffect, useCallback } from 'react'
 import {
   Send, Zap, Loader2, User, RotateCcw, ChevronRight,
-  ThumbsUp, ThumbsDown, CheckCircle, Flag, MessageSquare, X,
+  ThumbsUp, ThumbsDown, CheckCircle, Flag, MessageSquare, X, Network,
 } from 'lucide-react'
+
+type QueryMode = 'standard' | 'multi'
+
+interface SubAgent {
+  id: string
+  question: string
+  status: 'running' | 'done'
+  answer?: string
+  toolCalls?: number
+}
 
 interface Message {
   role: 'user' | 'assistant'
@@ -11,16 +21,85 @@ interface Message {
   error?: boolean
   feedback?: 'approved' | 'flagged'
   reviewComment?: string
+  model?: string
+  routeReason?: string
+  latencyMs?: number
+  toolCalls?: number
+  // multi-agent mode
+  subAgents?: SubAgent[]
+  synthesizing?: boolean
+  subtasks?: number
+  models?: { planner: string; worker: string; synthesizer: string }
 }
 
-const SUGGESTIONS = [
-  { icon: '👥', text: 'Which employees work on products used by the most customers?' },
-  { icon: '⚡', text: 'What decisions have affected the most workflows?' },
-  { icon: '🔗', text: 'Show the full chain from a person to a customer through products.' },
-  { icon: '🏢', text: 'Who are the key people in enterprise tier workflows?' },
-  { icon: '🔄', text: 'Which products depend on the most other products?' },
-  { icon: '💥', text: 'What is the impact chain if the core platform was removed?' },
+type Tier = 'direct' | 'haiku' | 'sonnet'
+
+interface Suggestion {
+  icon: string
+  text: string
+  tier: Tier
+}
+
+const TIER_META: Record<Tier, { label: string; color: string; bg: string; border: string; dot: string; desc: string }> = {
+  direct: {
+    label: 'Direct',
+    color: 'text-emerald-700',
+    bg: 'bg-emerald-50',
+    border: 'border-emerald-200',
+    dot: 'bg-emerald-500',
+    desc: 'No LLM · answered from Neo4j · ~0 ms · $0',
+  },
+  haiku: {
+    label: 'Haiku',
+    color: 'text-sky-700',
+    bg: 'bg-sky-50',
+    border: 'border-sky-200',
+    dot: 'bg-sky-500',
+    desc: 'Fast model · simple lookups · low cost',
+  },
+  sonnet: {
+    label: 'Sonnet',
+    color: 'text-violet-700',
+    bg: 'bg-violet-50',
+    border: 'border-violet-200',
+    dot: 'bg-violet-500',
+    desc: 'Full model · multi-hop reasoning',
+  },
+}
+
+const SUGGESTIONS: Suggestion[] = [
+  // ── Direct: list/count queries bypass the LLM entirely ──────────────────
+  { tier: 'direct', icon: '📋', text: 'list all workflows' },
+  { tier: 'direct', icon: '🔢', text: 'how many customers do we have' },
+  { tier: 'direct', icon: '📦', text: 'list all products' },
+
+  // ── Haiku: simple entity lookups — short questions, no complexity keywords
+  { tier: 'haiku', icon: '👤', text: 'Who is David Chen and what does he work on?' },
+  { tier: 'haiku', icon: '🏢', text: 'Which products does Sunstone Residential use and who built them?' },
+  { tier: 'haiku', icon: '💳', text: 'What is TenantPay and what is its current status?' },
+
+  // ── Sonnet: complex multi-hop reasoning — compliance, impact, risk, paths
+  { tier: 'sonnet', icon: '👥', text: 'Who owns the Lease Renewal workflow and who else is involved?' },
+  { tier: 'sonnet', icon: '⚖️', text: 'Trace the full impact of the GDPR and CCPA compliance overhaul.' },
+  { tier: 'sonnet', icon: '🔗', text: 'Find the connection between Elena Rodriguez and Apex Commercial.' },
+  { tier: 'sonnet', icon: '⚠️', text: 'What workflows would be at risk if Marcus Webb left the company?' },
+  { tier: 'sonnet', icon: '💥', text: 'What is the blast radius if the Work Order Processing workflow breaks?' },
+  { tier: 'sonnet', icon: '➕', text: "Add a new compliance engineer named 'Kai Patel' and connect them to the Fair Housing Audit workflow." },
 ]
+
+const SUGGESTION_GROUPS = (Object.keys(TIER_META) as Tier[]).map((tier) => ({
+  tier,
+  meta: TIER_META[tier],
+  items: SUGGESTIONS.filter((s) => s.tier === tier),
+}))
+
+function modelLabel(model?: string) {
+  if (!model) return null
+  if (model === 'direct') return { short: 'Direct', color: 'bg-emerald-50 text-emerald-700 border-emerald-200' }
+  if (model.includes('haiku')) return { short: 'Haiku', color: 'bg-sky-50 text-sky-700 border-sky-200' }
+  if (model.includes('sonnet')) return { short: 'Sonnet', color: 'bg-violet-50 text-violet-700 border-violet-200' }
+  return { short: model, color: 'bg-slate-50 text-slate-600 border-slate-200' }
+}
 
 function renderMarkdown(text: string) {
   return text.split('\n').map((line, i) => {
@@ -67,10 +146,59 @@ function truncate(text: string, n = 80) {
   return text.length > n ? text.slice(0, n).trimEnd() + '…' : text
 }
 
+// Live fan-out view for multi-agent mode: planner's sub-questions, each worker's
+// status (running/done) and tool count, expandable to its finding, plus a
+// synthesizing indicator before the merged answer streams in.
+function MultiAgentPanel({ subAgents, synthesizing }: { subAgents: SubAgent[]; synthesizing?: boolean }) {
+  const done = subAgents.filter((s) => s.status === 'done').length
+  return (
+    <div className="mb-3 rounded-xl border border-violet-200 bg-violet-50/40 overflow-hidden">
+      <div className="flex items-center gap-1.5 px-3 py-1.5 border-b border-violet-100 bg-violet-50">
+        <Network size={12} className="text-violet-500" />
+        <span className="text-[11px] font-semibold text-violet-700">
+          Multi-agent · {subAgents.length} sub-agent{subAgents.length !== 1 ? 's' : ''}
+        </span>
+        <span className="ml-auto text-[10px] text-violet-400">{done}/{subAgents.length} done</span>
+      </div>
+      <div className="divide-y divide-violet-100/70">
+        {subAgents.map((sa) => (
+          <details key={sa.id} className="group">
+            <summary className="flex items-start gap-2 px-3 py-2 cursor-pointer list-none hover:bg-violet-50/60">
+              <span className="mt-0.5 shrink-0">
+                {sa.status === 'done'
+                  ? <CheckCircle size={12} className="text-emerald-500" />
+                  : <Loader2 size={12} className="text-violet-400 animate-spin" />}
+              </span>
+              <span className="flex-1 text-xs text-slate-600 leading-snug">{sa.question}</span>
+              {sa.status === 'done' && sa.toolCalls != null && (
+                <span className="shrink-0 text-[10px] text-slate-400 mt-0.5">
+                  {sa.toolCalls} tool{sa.toolCalls !== 1 ? 's' : ''}
+                </span>
+              )}
+            </summary>
+            {sa.answer && (
+              <div className="px-3 pb-2.5 pl-7 text-xs text-slate-500 leading-relaxed whitespace-pre-wrap">
+                {sa.answer}
+              </div>
+            )}
+          </details>
+        ))}
+      </div>
+      {synthesizing && (
+        <div className="flex items-center gap-1.5 px-3 py-1.5 border-t border-violet-100 bg-violet-50/60">
+          <Loader2 size={11} className="text-violet-500 animate-spin" />
+          <span className="text-[11px] text-violet-600 font-medium">Synthesizing final answer…</span>
+        </div>
+      )}
+    </div>
+  )
+}
+
 export function QueryPage() {
   const [messages, setMessages] = useState<Message[]>([])
   const [input, setInput] = useState('')
   const [loading, setLoading] = useState(false)
+  const [mode, setMode] = useState<QueryMode>('standard')
   const [lastAsked, setLastAsked] = useState<string | null>(null)
   // Index of the message currently showing the flag comment form
   const [flaggingIdx, setFlaggingIdx] = useState<number | null>(null)
@@ -137,8 +265,18 @@ export function QueryPage() {
     setLoading(true)
     if (textareaRef.current) textareaRef.current.style.height = 'auto'
 
+    // Helper to patch the in-flight (last) assistant message
+    const patchLast = (fn: (m: Message) => Message) =>
+      setMessages((prev) => {
+        const next = [...prev]
+        const last = next[next.length - 1]
+        if (last?.role === 'assistant') next[next.length - 1] = fn(last)
+        return next
+      })
+
     try {
-      const res = await fetch('/api/query', {
+      const endpoint = mode === 'multi' ? '/api/query/orchestrate' : '/api/query'
+      const res = await fetch(endpoint, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ question }),
@@ -161,19 +299,38 @@ export function QueryPage() {
           try {
             const event = JSON.parse(line.slice(6))
             if (event.type === 'text') {
-              setMessages((prev) => {
-                const next = [...prev]
-                const last = next[next.length - 1]
-                if (last?.role === 'assistant') next[next.length - 1] = { ...last, content: last.content + event.content }
-                return next
-              })
+              patchLast((m) => ({ ...m, content: m.content + event.content }))
+            } else if (event.type === 'plan') {
+              patchLast((m) => ({
+                ...m,
+                subtasks: event.subtasks.length,
+                subAgents: event.subtasks.map((s: { id: string; question: string }) => ({
+                  id: s.id, question: s.question, status: 'running' as const,
+                })),
+              }))
+            } else if (event.type === 'subagent_result') {
+              patchLast((m) => ({
+                ...m,
+                subAgents: (m.subAgents ?? []).map((sa) =>
+                  sa.id === event.id
+                    ? { ...sa, status: 'done' as const, answer: event.answer, toolCalls: event.tool_calls }
+                    : sa
+                ),
+              }))
+            } else if (event.type === 'synthesis') {
+              patchLast((m) => ({ ...m, synthesizing: true }))
             } else if (event.type === 'done') {
-              setMessages((prev) => {
-                const next = [...prev]
-                const last = next[next.length - 1]
-                if (last?.role === 'assistant') next[next.length - 1] = { ...last, streaming: false }
-                return next
-              })
+              patchLast((m) => ({
+                ...m,
+                streaming: false,
+                synthesizing: false,
+                model: event.model,
+                routeReason: event.route_reason,
+                latencyMs: event.latency_ms,
+                toolCalls: event.tool_calls,
+                models: event.models,
+                subtasks: event.subtasks ?? m.subtasks,
+              }))
             } else if (event.type === 'error') {
               throw new Error(event.content)
             }
@@ -197,7 +354,7 @@ export function QueryPage() {
     } finally {
       setLoading(false)
     }
-  }, [loading])
+  }, [loading, mode])
 
   function onKeyDown(e: React.KeyboardEvent<HTMLTextAreaElement>) {
     if (e.key === 'Enter' && !e.shiftKey) {
@@ -246,34 +403,45 @@ export function QueryPage() {
         {/* ── Samples tab ── */}
         {sideTab === 'queries' && (
           <>
-            <div className="px-4 py-2.5 border-b border-slate-100">
-              <p className="text-xs text-slate-400">Click any to send</p>
+            <div className="px-4 py-2 border-b border-slate-100">
+              <p className="text-[10px] text-slate-400 uppercase tracking-wide font-medium">Model selection strategy</p>
             </div>
-            <div className="flex-1 overflow-y-auto py-2">
-              {SUGGESTIONS.map((s) => {
-                const isActive = lastAsked === s.text
-                return (
-                  <button
-                    key={s.text}
-                    onClick={() => ask(s.text)}
-                    disabled={loading}
-                    className={`w-full flex items-start gap-2.5 text-left px-3 py-2.5 transition-all duration-150 group border-r-2
-                      ${isActive ? 'bg-indigo-50 border-indigo-500' : 'border-transparent hover:bg-slate-50'}
-                      ${loading ? 'opacity-50 cursor-not-allowed' : 'cursor-pointer'}
-                    `}
-                  >
-                    <span className="text-base leading-none mt-0.5 shrink-0">{s.icon}</span>
-                    <span className={`text-xs leading-snug transition-colors ${
-                      isActive ? 'text-indigo-700 font-medium' : 'text-slate-600 group-hover:text-slate-900'
-                    }`}>
-                      {s.text}
-                    </span>
-                    <ChevronRight size={11} className={`shrink-0 mt-0.5 ml-auto transition-opacity ${
-                      isActive ? 'text-indigo-400 opacity-100' : 'text-slate-300 opacity-0 group-hover:opacity-100'
-                    }`} />
-                  </button>
-                )
-              })}
+            <div className="flex-1 overflow-y-auto">
+              {SUGGESTION_GROUPS.map(({ tier, meta, items }) => (
+                <div key={tier} className="py-1">
+                  {/* Tier header */}
+                  <div className={`mx-3 my-1.5 flex items-center gap-2 px-2.5 py-1.5 rounded-lg ${meta.bg} border ${meta.border}`}>
+                    <span className={`w-1.5 h-1.5 rounded-full ${meta.dot} shrink-0`} />
+                    <span className={`text-[10px] font-bold uppercase tracking-wide ${meta.color}`}>{meta.label}</span>
+                    <span className={`text-[10px] ${meta.color} opacity-70 ml-auto text-right leading-tight`}>{meta.desc}</span>
+                  </div>
+                  {/* Questions in this tier */}
+                  {items.map((s) => {
+                    const isActive = lastAsked === s.text
+                    return (
+                      <button
+                        key={s.text}
+                        onClick={() => ask(s.text)}
+                        disabled={loading}
+                        className={`w-full flex items-start gap-2 text-left px-3 py-2 transition-all duration-150 group border-r-2
+                          ${isActive ? 'bg-indigo-50 border-indigo-500' : 'border-transparent hover:bg-slate-50'}
+                          ${loading ? 'opacity-50 cursor-not-allowed' : 'cursor-pointer'}
+                        `}
+                      >
+                        <span className="text-sm leading-none mt-0.5 shrink-0">{s.icon}</span>
+                        <span className={`text-xs leading-snug transition-colors ${
+                          isActive ? 'text-indigo-700 font-medium' : 'text-slate-600 group-hover:text-slate-900'
+                        }`}>
+                          {s.text}
+                        </span>
+                        <ChevronRight size={10} className={`shrink-0 mt-0.5 ml-auto transition-opacity ${
+                          isActive ? 'text-indigo-400 opacity-100' : 'text-slate-300 opacity-0 group-hover:opacity-100'
+                        }`} />
+                      </button>
+                    )
+                  })}
+                </div>
+              ))}
             </div>
           </>
         )}
@@ -344,7 +512,7 @@ export function QueryPage() {
                 <div className="inline-flex items-center justify-center w-14 h-14 rounded-2xl bg-indigo-50 border border-indigo-200 mb-4">
                   <Zap size={24} className="text-indigo-500" />
                 </div>
-                <h2 className="text-lg font-semibold text-slate-800 mb-1.5">Ask anything about Nexus Corp</h2>
+                <h2 className="text-lg font-semibold text-slate-800 mb-1.5">Ask anything about Meridian Property Group</h2>
                 <p className="text-sm text-slate-400 max-w-xs leading-relaxed">
                   Select a sample query from the left, or type your own question below.
                 </p>
@@ -385,9 +553,12 @@ export function QueryPage() {
                         <p className="text-sm leading-relaxed">{msg.content}</p>
                       ) : (
                         <div className="space-y-0.5">
+                          {msg.subAgents && msg.subAgents.length > 0 && (
+                            <MultiAgentPanel subAgents={msg.subAgents} synthesizing={msg.synthesizing} />
+                          )}
                           {msg.content
                             ? renderMarkdown(msg.content)
-                            : msg.streaming
+                            : msg.streaming && !msg.subAgents
                               ? <span className="text-slate-400 text-sm">Thinking…</span>
                               : null}
                           {msg.streaming && (
@@ -395,6 +566,56 @@ export function QueryPage() {
                           )}
                         </div>
                       )}
+
+                      {/* Routing decision badge — shown after streaming completes */}
+                      {msg.role === 'assistant' && !msg.streaming && !msg.error && (msg.model || msg.models) && (() => {
+                        const latency = msg.latencyMs ? (
+                          <span className="text-[10px] text-slate-400 ml-auto">
+                            {(msg.latencyMs / 1000).toFixed(1)}s
+                            {msg.toolCalls ? ` · ${msg.toolCalls} tool call${msg.toolCalls !== 1 ? 's' : ''}` : ''}
+                          </span>
+                        ) : null
+
+                        // Multi-agent: show which LLM ran each role (planner / workers / synthesizer)
+                        if (msg.models) {
+                          const roleChip = (role: string, model: string) => {
+                            const ml = modelLabel(model)
+                            return (
+                              <span className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-semibold border ${ml?.color ?? 'bg-slate-50 text-slate-600 border-slate-200'}`}>
+                                <span className="opacity-60 font-normal">{role}</span> {ml?.short ?? model}
+                              </span>
+                            )
+                          }
+                          return (
+                            <div className="mt-2.5 flex items-center gap-1.5 flex-wrap">
+                              <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-semibold border bg-violet-50 text-violet-700 border-violet-200">
+                                <Network size={10} /> Multi-agent
+                              </span>
+                              {roleChip('planner', msg.models.planner)}
+                              {roleChip(`${msg.subtasks ?? ''}× worker`.trim(), msg.models.worker)}
+                              {roleChip('synth', msg.models.synthesizer)}
+                              {latency}
+                            </div>
+                          )
+                        }
+
+                        // Standard / single-agent: single routing badge (Direct = no LLM)
+                        const ml = modelLabel(msg.model)
+                        if (!ml) return null
+                        return (
+                          <div className="mt-2.5 flex items-center gap-1.5 flex-wrap">
+                            <span className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-semibold border ${ml.color}`}>
+                              ⚡ {ml.short}
+                            </span>
+                            {msg.routeReason && (
+                              <span className="text-[10px] text-slate-400">
+                                {msg.routeReason}
+                              </span>
+                            )}
+                            {latency}
+                          </div>
+                        )
+                      })()}
 
                       {/* Human review controls — assistant only, after streaming */}
                       {msg.role === 'assistant' && !msg.streaming && !msg.error && (
@@ -503,7 +724,33 @@ export function QueryPage() {
 
         {/* Input bar */}
         <div className="shrink-0 border-t border-slate-200 bg-white px-5 py-4 shadow-[0_-1px_3px_0_rgb(0,0,0,0.04)]">
-          <div className="max-w-2xl mx-auto flex gap-2.5 items-end">
+          <div className="max-w-2xl mx-auto">
+          {/* Query mode toggle */}
+          <div className="flex items-center gap-2 mb-2">
+            <span className="text-[10px] text-slate-400 uppercase tracking-wide font-medium">Mode</span>
+            <div className="flex items-center rounded-lg bg-slate-100 p-0.5">
+              {(['standard', 'multi'] as QueryMode[]).map((mo) => (
+                <button
+                  key={mo}
+                  onClick={() => setMode(mo)}
+                  disabled={loading}
+                  title={mo === 'multi'
+                    ? 'Planner decomposes the question, parallel sub-agents research, a synthesizer merges'
+                    : 'Single model answers from the full graph context'}
+                  className={`flex items-center gap-1 px-2.5 py-1 text-[11px] font-medium rounded-md transition-colors disabled:opacity-50 ${
+                    mode === mo ? 'bg-white text-indigo-600 shadow-sm' : 'text-slate-400 hover:text-slate-600'
+                  }`}
+                >
+                  {mo === 'multi' && <Network size={10} />}
+                  {mo === 'standard' ? 'Standard' : 'Multi-agent'}
+                </button>
+              ))}
+            </div>
+            {mode === 'multi' && (
+              <span className="text-[10px] text-slate-400">planner → parallel workers → synthesizer</span>
+            )}
+          </div>
+          <div className="flex gap-2.5 items-end">
             <div className="flex-1 bg-slate-50 border border-slate-200 rounded-xl overflow-hidden focus-within:border-indigo-400 focus-within:bg-white focus-within:shadow-sm transition-all">
               <textarea
                 ref={textareaRef}
@@ -528,6 +775,7 @@ export function QueryPage() {
                 ? <Loader2 size={15} className="text-white animate-spin" />
                 : <Send size={14} className="text-white" />}
             </button>
+          </div>
           </div>
         </div>
       </div>

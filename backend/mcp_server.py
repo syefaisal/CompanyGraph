@@ -1,8 +1,9 @@
 """
-Company Knowledge Graph MCP Server
+Meridian Property Group — Knowledge Graph MCP Server
 
 Exposes the Neo4j knowledge graph as MCP tools so any MCP-compatible AI
-(Claude, etc.) can query people, products, customers, workflows, and decisions.
+(Claude, etc.) can query people, products, customers, workflows, and decisions
+for a PropTech SaaS company managing residential and commercial properties.
 
 Run via stdio (Claude Desktop / Claude Code):
     python mcp_server.py
@@ -15,13 +16,19 @@ from mcp.server.fastmcp import FastMCP
 import graph as g
 
 mcp = FastMCP(
-    "company-graph",
+    "meridian-property-graph",
     instructions=(
-        "You have access to Nexus Corp's company knowledge graph. "
-        "It contains People, Products, Customers, Workflows, and Decisions "
-        "with rich relationships between them. Use these tools to answer "
-        "questions about the company, trace decision impact, find who owns "
-        "what, and understand how entities are connected."
+        "You have access to Meridian Property Group's company knowledge graph. "
+        "Meridian is a PropTech SaaS company providing lease management, "
+        "maintenance, payment, and analytics software for property managers. "
+        "The graph contains People (engineers, compliance, leasing, operations), "
+        "Products (LeaseTrack, MaintenanceOS, TenantPay, OwnerInsight, LegacyPortal), "
+        "Customers (residential and commercial property management firms), "
+        "Workflows (Lease Renewal, Work Order Processing, Fair Housing Audit, etc.), "
+        "and Decisions (deprecations, compliance overhauls, market expansions). "
+        "Use these tools to answer questions about the company, trace decision impact, "
+        "find single points of failure, understand compliance posture, and map "
+        "customer-to-product relationships."
     ),
 )
 
@@ -30,6 +37,9 @@ VALID_REL_TYPES = {
     "WORKS_ON", "OWNS", "MADE", "AFFECTS", "INVOLVES",
     "DEPENDS_ON", "PRODUCES", "USES",
 }
+
+# Use hybrid BM25 search by default; fall back to substring search if needed
+_search = g.hybrid_search_nodes
 
 
 def _fmt(data) -> str:
@@ -48,7 +58,7 @@ def list_entities(entity_type: str) -> str:
     """
     if entity_type not in VALID_LABELS:
         return f"Invalid entity_type. Choose from: {', '.join(sorted(VALID_LABELS))}"
-    nodes = g.list_nodes(label=entity_type)
+    nodes = g.list_nodes(label=entity_type)  # list_entities always returns all; no search needed
     if not nodes:
         return f"No {entity_type} nodes found."
     lines = [f"Found {len(nodes)} {entity_type}(s):\n"]
@@ -96,12 +106,12 @@ def search_graph(keyword: str, entity_type: str = "") -> str:
         entity_type: Optional filter — one of Person, Product, Customer, Workflow, Decision
     """
     label = entity_type if entity_type in VALID_LABELS else None
-    results = g.search_nodes(keyword=keyword, label=label)
+    results = _search(keyword=keyword, label=label)
     if not results:
         return f"No results for '{keyword}'" + (f" in {entity_type}" if label else "") + "."
     lines = [f"Found {len(results)} result(s) for '{keyword}':"]
     for n in results:
-        lines.append(f"  [{n['id']}] {n.get('name')} ({', '.join(n.get('_labels', []))}) — {_fmt({k: v for k, v in n.items() if k not in ('_labels',)})}")
+        lines.append(f"  [{n['id']}] {n.get('name')} ({', '.join(n.get('_labels', []))}) — {_fmt({k: v for k, v in n.items() if k not in ('_labels', '_match')})}")
     return "\n".join(lines)
 
 

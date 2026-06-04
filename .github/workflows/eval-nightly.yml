@@ -1,0 +1,149 @@
+name: Nightly Eval
+
+on:
+  schedule:
+    # Runs at 06:00 UTC every day
+    - cron: "0 6 * * *"
+  # Allow manual trigger from Actions tab
+  workflow_dispatch:
+    inputs:
+      endpoint:
+        description: "Query endpoint to evaluate"
+        required: false
+        default: "standard"
+        type: choice
+        options:
+          - standard
+          - agent
+
+jobs:
+  eval:
+    name: Offline Evaluation & Regression Check
+    runs-on: ubuntu-latest
+
+    services:
+      neo4j:
+        image: neo4j:5.15-community
+        env:
+          NEO4J_AUTH: neo4j/companygraph123
+        ports:
+          - 7687:7687
+          - 7474:7474
+        options: >-
+          --health-cmd "wget -qO- http://localhost:7474/ > /dev/null 2>&1"
+          --health-interval 10s
+          --health-timeout 10s
+          --health-retries 20
+          --health-start-period 40s
+
+    env:
+      NEO4J_URI: bolt://localhost:7687
+      NEO4J_USER: neo4j
+      NEO4J_PASSWORD: companygraph123
+      ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+      LANGSMITH_API_KEY: ${{ secrets.LANGSMITH_API_KEY }}
+      LANGSMITH_PROJECT: cogni-graph
+      LANGSMITH_TRACING_V2: "true"
+      PROMPT_VERSION: v1
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Wait for Neo4j
+        run: |
+          for i in $(seq 1 30); do
+            if python3 -c "from neo4j import GraphDatabase; \
+              d = GraphDatabase.driver('bolt://localhost:7687', auth=('neo4j','companygraph123')); \
+              d.verify_connectivity(); d.close()" 2>/dev/null; then
+              echo "Neo4j ready"
+              break
+            fi
+            echo "Attempt $i/30 — sleeping 5s"
+            sleep 5
+          done
+
+      - name: Seed PropTech graph
+        run: python backend/seed.py
+
+      - name: Start API server
+        run: |
+          cd backend && uvicorn api:app --host 0.0.0.0 --port 8000 > /tmp/api.log 2>&1 &
+          for i in $(seq 1 20); do
+            if curl -sf http://localhost:8000/ > /dev/null 2>&1; then
+              echo "API ready"
+              break
+            fi
+            sleep 3
+          done
+
+      - name: Run evaluation — standard endpoint
+        if: ${{ github.event.inputs.endpoint != 'agent' }}
+        run: |
+          mkdir -p backend/eval_results
+          python backend/eval.py --out backend/eval_results/nightly_standard.json
+
+      - name: Run evaluation — agent endpoint
+        if: ${{ github.event.inputs.endpoint == 'agent' }}
+        run: |
+          mkdir -p backend/eval_results
+          python backend/eval.py --agent --out backend/eval_results/nightly_agent.json
+
+      - name: Check for eval regression
+        run: |
+          python3 scripts/check_eval_regression.py \
+            backend/eval_results/nightly_${{ github.event.inputs.endpoint || 'standard' }}.json
+
+      - name: Upload eval results as artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: eval-results-${{ github.run_id }}-${{ github.event.inputs.endpoint || 'standard' }}
+          path: backend/eval_results/
+          retention-days: 90
+
+      - name: Create GitHub issue on regression
+        if: failure()
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require('fs');
+            let body = '## ⚠️ Nightly Eval Regression Detected\n\n';
+            body += `**Run:** [${context.runId}](${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId})\n`;
+            body += `**Date:** ${new Date().toISOString()}\n`;
+            body += `**Endpoint:** ${{ github.event.inputs.endpoint || 'standard' }}\n\n`;
+
+            const files = fs.readdirSync('eval_results').filter(f => f.endsWith('.json'));
+            if (files.length > 0) {
+              const data = JSON.parse(fs.readFileSync(`eval_results/${files[0]}`, 'utf8'));
+              body += '### Summary\n';
+              body += `- Pass rate: \`${data.summary?.pass_rate}\`\n`;
+              body += `- Avg recall: \`${data.summary?.avg_recall}\`\n`;
+              body += `- Avg latency: \`${data.summary?.avg_latency_ms}ms\`\n\n`;
+              body += '### Failed cases\n';
+              const failed = (data.results || []).filter(r => !r.passed);
+              failed.forEach(r => {
+                body += `- **[${r.id}] ${r.category}** — recall: \`${r.recall}\` model: \`${r.model}\`\n`;
+              });
+            }
+
+            body += '\n**Action required:** Review eval results artifact and check for prompt, model, or data issues.';
+
+            await github.rest.issues.create({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              title: `⚠️ Nightly eval regression — ${new Date().toISOString().split('T')[0]}`,
+              body,
+              labels: ['eval-regression', 'ai-quality'],
+            });
+
+      - name: Show API logs on failure
+        if: failure()
+        run: cat /tmp/api.log 2>/dev/null || echo "No API log"

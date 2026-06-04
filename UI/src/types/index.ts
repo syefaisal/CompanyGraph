@@ -1,10 +1,18 @@
 export type NodeLabel = 'Person' | 'Product' | 'Customer' | 'Workflow' | 'Decision'
 
+export interface MatchInfo {
+  lexical: boolean
+  semantic: boolean
+  bm25_score: number | null
+  semantic_score: number | null
+}
+
 export interface GraphNode {
   id: string
   label: NodeLabel
   _labels: string[]
   name: string
+  _match?: MatchInfo
   [key: string]: unknown
 }
 
