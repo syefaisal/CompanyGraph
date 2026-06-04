@@ -18,6 +18,11 @@ import sys
 from pathlib import Path
 
 import anthropic
+from dotenv import load_dotenv
+
+# extract_graph() calls Claude before graph.py (which loads .env) is imported,
+# so load the repo-root .env here to pick up ANTHROPIC_API_KEY when run standalone.
+load_dotenv(Path(__file__).resolve().parent.parent / ".env")
 
 # ---------------------------------------------------------------------------
 # Tool schema — Claude must call this exactly once with the extracted graph
@@ -106,7 +111,7 @@ Do not omit any entity or relationship mentioned in the document.\
 # Extraction via Claude
 # ---------------------------------------------------------------------------
 
-def extract_graph(document_text: str, model: str = "claude-opus-4-7") -> dict:
+def extract_graph(document_text: str, model: str = "claude-opus-4-8") -> dict:
     """Send the document to Claude and return the extracted {entities, relationships}."""
     client = anthropic.Anthropic()
 
@@ -114,7 +119,10 @@ def extract_graph(document_text: str, model: str = "claude-opus-4-7") -> dict:
 
     response = client.messages.create(
         model=model,
-        max_tokens=4096,
+        # The full graph (entities + relationships) for a company brief easily
+        # exceeds a few thousand output tokens; too small a budget truncates the
+        # tool call mid-JSON and drops 'relationships'. Keep this generous.
+        max_tokens=16384,
         system=SYSTEM_PROMPT,
         tools=[EXTRACTION_TOOL],
         tool_choice={"type": "tool", "name": "save_knowledge_graph"},
@@ -126,10 +134,22 @@ def extract_graph(document_text: str, model: str = "claude-opus-4-7") -> dict:
         ],
     )
 
+    if response.stop_reason == "max_tokens":
+        raise RuntimeError(
+            "Extraction was truncated (hit max_tokens) — the tool call is incomplete. "
+            "Raise max_tokens in extract_graph() or split the document."
+        )
+
     # tool_choice forces exactly one tool call — pull its input directly
     for block in response.content:
         if block.type == "tool_use" and block.name == "save_knowledge_graph":
-            return block.input
+            data = block.input
+            if "entities" not in data or "relationships" not in data:
+                raise RuntimeError(
+                    "Extraction returned an incomplete graph "
+                    f"(keys: {sorted(data)}); expected 'entities' and 'relationships'."
+                )
+            return data
 
     raise RuntimeError("Claude did not return a save_knowledge_graph tool call.")
 
@@ -141,8 +161,8 @@ def extract_graph(document_text: str, model: str = "claude-opus-4-7") -> dict:
 def load_into_neo4j(graph_data: dict, clear: bool = False) -> None:
     from graph import run
 
-    entities = graph_data["entities"]
-    relationships = graph_data["relationships"]
+    entities = graph_data.get("entities", [])
+    relationships = graph_data.get("relationships", [])
 
     if clear:
         print("Clearing existing graph…")
@@ -184,7 +204,7 @@ def main() -> None:
     parser.add_argument("--file", default="nexus_corp_brief.md", help="Path to the source document")
     parser.add_argument("--dry-run", action="store_true", help="Print extracted JSON without writing to Neo4j")
     parser.add_argument("--clear", action="store_true", help="Delete all existing nodes before loading")
-    parser.add_argument("--model", default="claude-opus-4-7", help="Claude model to use for extraction")
+    parser.add_argument("--model", default="claude-opus-4-8", help="Claude model to use for extraction")
     args = parser.parse_args()
 
     doc_path = Path(args.file)

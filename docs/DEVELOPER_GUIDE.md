@@ -38,7 +38,8 @@ CompanyGraph/
 │
 ├── backend/                # ── Python source + runtime data ─────────────────
 │   ├── api.py              # FastAPI application — all endpoints, agent loop, metrics
-│   ├── graph.py            # Neo4j data layer — all Cypher queries, BM25 search, CRUD
+│   ├── graph.py            # Neo4j data layer — all Cypher queries, hybrid search (BM25+RRF), CRUD
+│   ├── embeddings.py       # Local sentence-transformers embeddings — semantic search arm
 │   ├── models.py           # Pydantic request/response models
 │   ├── mcp_server.py       # MCP server exposing graph as tools for Claude Desktop/Code
 │   ├── seed.py             # PropTech seed data loader (Meridian Property Group)
@@ -128,8 +129,9 @@ CompanyGraph/
 │                             │                                   │
 │  POST /query  ──► full graph + cache ──► AsyncAnthropic.stream  │
 │  POST /query/agent ──► tool loop ──► AsyncAnthropic.create×N    │
+│  POST /query/orchestrate ──► planner→‖workers‖→synthesizer      │
 │  GET  /metrics  ──► in-memory counters                          │
-│  GET  /search   ──► hybrid_search_nodes (BM25)                  │
+│  GET  /search   ──► hybrid_search_nodes (BM25 + semantic, RRF) │
 │                                                                 │
 │  wrap_anthropic + @traceable ──► LangSmith (when enabled)       │
 └──────────────────────────────────────────────────────────────────┘
@@ -141,6 +143,7 @@ CompanyGraph/
 │  get_full_graph()   hybrid_search_nodes()   find_shortest_path()│
 │  get_node()         create_node()           create_relationship()│
 │  _bm25_score()      _tokenize()             _node_to_text()     │
+│  _rrf_fuse()        embeddings.embed_*()    embeddings.cosine() │
 └──────────────────────────────────────────────────────────────────┘
                            │
                            ▼
@@ -160,7 +163,7 @@ CompanyGraph/
 User question
   → route_query()           classify: direct | haiku | sonnet
   → _try_direct_answer()    short-circuit for list/count — no LLM
-  → hybrid_search_nodes()   BM25 ranked entity lookup
+  → hybrid_search_nodes()   BM25 + semantic ranked entity lookup (RRF)
   → get_full_graph()        all nodes + relationships
   → _format_graph()         serialise to plain text
   → AsyncAnthropic.stream() backend/prompts/v1.yaml + graph → SSE token stream
@@ -241,7 +244,15 @@ def get_driver() -> GraphDatabase.driver: ...
 | Function | Algorithm | Use case |
 |----------|-----------|----------|
 | `search_nodes(keyword, label)` | `CONTAINS` substring | Fast substring match, label filter |
-| `hybrid_search_nodes(keyword, label, top_k)` | **BM25** | Ranked lexical search — preferred everywhere |
+| `hybrid_search_nodes(keyword, label, top_k)` | **BM25 + semantic, RRF-fused** | Ranked hybrid search — preferred everywhere |
+
+**Hybrid pipeline** (`graph.py:hybrid_search_nodes`):
+
+1. **Lexical arm — BM25** (`_bm25_score`): produces a rank list of nodes with score > 0.
+2. **Semantic arm** (`embeddings.py`): embeds the query and every node with `all-MiniLM-L6-v2` (384-dim, L2-normalised) and ranks by cosine similarity. Per-text vectors are cached; the model loads lazily.
+3. **Fusion — RRF** (`_rrf_fuse`): merges the two rank lists by `Σ 1/(k+rank)` with `k=60`, score-scale agnostic, so lexical-only and semantic-only hits both survive.
+
+If `sentence-transformers` is unavailable the semantic arm is empty and the function returns pure BM25 (then substring search on zero lexical results).
 
 **BM25 internals** (`graph.py:_bm25_score`):
 
@@ -252,7 +263,7 @@ k1 = 1.5   (term frequency saturation)
 b  = 0.75  (document length normalisation)
 ```
 
-Node text is built from: `name + description + role + category + title + rationale + industry + type`.
+Node text (both arms) is built from: `name + description + role + category + title + rationale + industry + type`.
 
 ### Write functions
 
@@ -674,6 +685,7 @@ LANGSMITH_TRACING_V2=true        # master switch — required
 | `POST /query` (direct) | None — no LLM call |
 | `POST /query` (LLM) | `route_query` chain + `ChatAnthropic` llm (via wrap_anthropic on `messages.stream`) |
 | `POST /query/agent` | `agent_query` chain → N × (`ChatAnthropic` llm + `execute_graph_tool` tool) |
+| `POST /query/orchestrate` | `orchestrate_plan` chain + N × `orchestrate_worker` chains (each with llm + tool spans) + synthesizer llm |
 
 ### Verified output for one agent query
 
@@ -856,7 +868,7 @@ Returns `201` or `404` if either node doesn't exist.
 ### Search
 
 #### `GET /search`
-Query params: `q` (required), `type` (label filter), `mode` (`hybrid` | `keyword`, default `hybrid`).
+Query params: `q` (required), `type` (label filter), `mode` (`hybrid` | `keyword`, default `hybrid`). `hybrid` fuses BM25 + semantic embeddings via RRF; `keyword` is direct substring match.
 
 #### `GET /path`
 Query params: `from_id`, `to_id`. Returns path steps + hop count, or `404`.
@@ -874,8 +886,13 @@ SSE stream. Event types: `text`, `done`, `error`.
 `done` event includes: `model`, `latency_ms`.
 
 #### `POST /query/agent`
-Same request body. SSE stream. Event types: `thinking`, `tool_call`, `tool_result`, `text`, `done`, `error`.  
+Same request body. Single-agent tool loop. SSE stream. Event types: `thinking`, `tool_call`, `tool_result`, `text`, `done`, `error`.  
 `done` event includes: `model`, `tool_calls`, `latency_ms`.
+
+#### `POST /query/orchestrate`
+Same request body. Multi-agent: planner → parallel workers → synthesizer. No agent framework — plain Python on the Anthropic SDK with stdlib `asyncio.as_completed` for the parallel worker fan-out. SSE stream. Event types: `plan`, `subagent_start`, `subagent_result`, `synthesis`, `text`, `safety_warning`, `done`, `error`.  
+`done` event includes: `subtasks`, `tool_calls`, `latency_ms`, `models` (planner/worker/synthesizer).  
+Per-role models via `ORCH_PLANNER_MODEL` / `ORCH_WORKER_MODEL` / `ORCH_SYNTH_MODEL` (defaults Sonnet/Haiku/Sonnet); sub-task cap via `ORCH_MAX_SUBTASKS`.
 
 ---
 
@@ -1008,11 +1025,12 @@ python backend/seed.py   # clears existing data and reloads
 curl http://localhost:8000/graph | python3 -m json.tool | head -60
 ```
 
-### BM25 search returning irrelevant results
+### Hybrid search returning irrelevant tail results
 
-- Check `_node_to_text()` in `graph.py` — verify the entity has searchable fields (`name`, `description`, `role`, etc.)
-- Try `?mode=keyword` as a fallback to confirm the entity is in the graph
-- Add missing fields (e.g. `description`) to the entity's seed data in `seed.py` and re-seed
+- Hybrid mode returns a ranked top-k (not a hard filter), so the semantic arm can pad the list with weakly-related nodes below the strong matches — the top results are what matter. Use `?mode=keyword` for strict substring matching.
+- Check `_node_to_text()` in `graph.py` — verify the entity has searchable fields (`name`, `description`, `role`, etc.); both arms embed/score the same text.
+- Add missing fields (e.g. `description`) to the entity's seed data in `seed.py` and re-seed.
+- If results look purely lexical, the semantic arm may be disabled: confirm `sentence-transformers` is installed (`embeddings.is_available()` returns `True`); otherwise the search silently falls back to BM25-only.
 
 ### UI shows old data after graph update
 

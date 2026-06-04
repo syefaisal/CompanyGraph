@@ -2,6 +2,7 @@ import os
 import json
 import time
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Optional
 from fastapi import FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
@@ -10,6 +11,14 @@ from pydantic import BaseModel
 from anthropic import AsyncAnthropic
 from models import NodeCreate, RelationshipCreate
 import graph as g
+# Stateless helpers (prompt loading, graph serialization, input/output safety)
+from utils import (
+    _load_prompts,
+    _format_graph,
+    _check_injection,
+    _scan_output,
+    MAX_QUESTION_LENGTH,
+)
 
 # ── LangSmith tracing (optional) ─────────────────────────────────────────────
 # Set LANGSMITH_API_KEY + LANGSMITH_TRACING_V2=true in .env to enable.
@@ -23,26 +32,16 @@ _anthropic = wrap_anthropic(AsyncAnthropic())
 # Active version is controlled by PROMPT_VERSION in .env (default: v1).
 # To create a new version: copy prompts/v1.yaml → prompts/v2.yaml, edit, then
 # set PROMPT_VERSION=v2 in .env and restart. Rollback = revert PROMPT_VERSION.
-import yaml as _yaml
-
-
-def _load_prompts(version: str) -> dict:
-    path = Path(__file__).parent / "prompts" / f"{version}.yaml"
-    if not path.exists():
-        raise FileNotFoundError(
-            f"Prompt version '{version}' not found. "
-            f"Expected: prompts/{version}.yaml  |  "
-            f"Available: {[p.stem for p in (Path(__file__).parent / 'prompts').glob('*.yaml')]}"
-        )
-    with open(path, encoding="utf-8") as f:
-        data = _yaml.safe_load(f)
-    return data
-
-
+# _load_prompts lives in utils.py.
 _PROMPT_VERSION = os.getenv("PROMPT_VERSION", "v1")
 _prompt_data = _load_prompts(_PROMPT_VERSION)
 SYSTEM_PROMPT: str = _prompt_data["prompts"]["system_prompt"].strip()
 AGENT_SYSTEM_PROMPT: str = _prompt_data["prompts"]["agent_system_prompt"].strip()
+# Multi-agent orchestration prompts — fall back to existing prompts if a prompt
+# version predates them, so older YAML files keep working.
+PLANNER_SYSTEM_PROMPT: str = _prompt_data["prompts"].get("planner_system_prompt", AGENT_SYSTEM_PROMPT).strip()
+WORKER_SYSTEM_PROMPT: str = _prompt_data["prompts"].get("worker_system_prompt", AGENT_SYSTEM_PROMPT).strip()
+SYNTHESIZER_SYSTEM_PROMPT: str = _prompt_data["prompts"].get("synthesizer_system_prompt", SYSTEM_PROMPT).strip()
 
 # ── Observability ─────────────────────────────────────────────────────────────
 
@@ -53,6 +52,7 @@ _DAILY_COST_LIMIT_USD: float = float(os.getenv("DAILY_COST_LIMIT_USD", "5.0"))
 _metrics: dict = {
     "query_count": 0,
     "agent_query_count": 0,
+    "orchestrate_query_count": 0,
     "direct_query_count": 0,
     "total_latency_ms": 0.0,
     "total_input_tokens": 0,
@@ -82,6 +82,8 @@ def _update_metrics(query_type: str, latency_ms: float, usage=None, model: str =
         _metrics["query_count"] += 1
     elif query_type == "agent":
         _metrics["agent_query_count"] += 1
+    elif query_type == "orchestrate":
+        _metrics["orchestrate_query_count"] += 1
     elif query_type == "direct":
         _metrics["direct_query_count"] += 1
     _metrics["total_latency_ms"] += latency_ms
@@ -116,134 +118,10 @@ def _update_metrics(query_type: str, latency_ms: float, usage=None, model: str =
         )
 
 
-# ── Prompt injection defence ─────────────────────────────────────────────────
-# Guards both /query and /query/agent before any LLM call is made.
-# Checks: max length (500 chars) + pattern match against known injection families.
-# Flagged inputs increment _metrics["safety_events"] and return HTTP 400.
-# The rejected question is never forwarded to the LLM or logged to LangSmith.
-
-import re as _re
-
-MAX_QUESTION_LENGTH = 500
-
-_INJECTION_PATTERNS: list[tuple[str, str]] = [
-    # Instruction override
-    (r"ignore\s+(all\s+)?(previous|prior|above|these)\s+instructions?",
-     "instruction_override"),
-    (r"disregard\s+(all\s+)?(the\s+)?(previous|prior|above|these|your)\s+(instructions?|rules?|guidelines?)",
-     "instruction_override"),
-    (r"forget\s+(all\s+)?(previous|prior|above|your)\s+instructions?",
-     "instruction_override"),
-    (r"override\s+(your|the|all)\s+(instructions?|directives?|rules?)",
-     "instruction_override"),
-    (r"new\s+(instructions?|rules?|directives?)\s*[:;]",
-     "instruction_override"),
-
-    # System prompt extraction
-    (r"(reveal|show|print|output|display|repeat)\s+(\w+\s+)?(your|the)?\s*(system|initial|original)?\s*(prompt|instructions?)\b",
-     "prompt_extraction"),
-    (r"what\s+(is|are)\s+your\s+(system\s+)?(prompt|instructions?|directives?)",
-     "prompt_extraction"),
-    (r"(tell\s+me|give\s+me)\s+(\w+\s+)?(your|the)?\s*(system|initial|original)?\s*(prompt|instructions?)",
-     "prompt_extraction"),
-
-    # Identity / role override
-    (r"you\s+are\s+now\s+(a|an|the)\s+\w+",
-     "identity_override"),
-    (r"pretend\s+(you\s+are|to\s+be)\s+(a|an|the)?",
-     "identity_override"),
-    (r"roleplay\s+as\s+(a|an|the)?",
-     "identity_override"),
-    (r"simulate\s+being\s+(a|an|the)?",
-     "identity_override"),
-    (r"act\s+as\s+(if\s+you\s+(are|were)\s+)?(a|an|the)?\s*(different|unrestricted|unfiltered)",
-     "identity_override"),
-
-    # Jailbreak / mode switch keywords
-    (r"\bjailbreak\b", "jailbreak"),
-    (r"\bdan\s+mode\b", "jailbreak"),
-    (r"\bdeveloper\s+mode\b", "jailbreak"),
-    (r"\bunrestricted\s+mode\b", "jailbreak"),
-    (r"\bgodmode\b", "jailbreak"),
-
-    # Delimiter injection (fake system/user/assistant turns)
-    (r"<\s*system\s*>", "delimiter_injection"),
-    (r"\[system\]", "delimiter_injection"),
-    (r"###\s*system", "delimiter_injection"),
-    (r"\bassistant\s*:", "delimiter_injection"),
-    (r"\bsystem\s*:", "delimiter_injection"),
-]
-
-_COMPILED_PATTERNS: list[tuple[_re.Pattern, str]] = [
-    (_re.compile(pat, _re.IGNORECASE), label)
-    for pat, label in _INJECTION_PATTERNS
-]
-
-
-def _check_injection(question: str) -> Optional[str]:
-    """
-    Returns a violation category string if the question looks like a prompt
-    injection attempt, or None if it is safe to proceed.
-    Never raises — callers decide how to handle the result.
-    """
-    if len(question) > MAX_QUESTION_LENGTH:
-        return f"question_too_long:{len(question)}_chars_max_{MAX_QUESTION_LENGTH}"
-
-    for pattern, label in _COMPILED_PATTERNS:
-        if pattern.search(question):
-            return label
-
-    return None
-
-
-# ── Output safety guardrails ─────────────────────────────────────────────────
-# Scans LLM output text for PropTech-relevant PII patterns before sending to
-# the browser. Detected values are redacted with [REDACTED:<TYPE>] and the
-# event count is recorded in _metrics["output_safety_events"].
-#
-# Implementation note: the standard /query endpoint buffers the full response
-# before emitting so the scan can cover complete token sequences (e.g. a card
-# number split across multiple stream chunks). The agent /query/agent endpoint
-# already assembles the final answer before emission.
-
-_OUTPUT_PII_PATTERNS: list[tuple[_re.Pattern, str]] = [
-    # Social Security Numbers  — NNN-NN-NNNN
-    (_re.compile(r'\b\d{3}-\d{2}-\d{4}\b'), "SSN"),
-
-    # Payment card numbers — 16-digit formatted (spaces or dashes)
-    (_re.compile(r'\b\d{4}[\s\-]\d{4}[\s\-]\d{4}[\s\-]\d{4}\b'), "PAYMENT_CARD"),
-
-    # Payment card numbers — Visa / Mastercard / Amex / Discover (unformatted)
-    (_re.compile(
-        r'\b(?:4[0-9]{12}(?:[0-9]{3})?'      # Visa 13/16 digits
-        r'|5[1-5][0-9]{14}'                    # Mastercard
-        r'|3[47][0-9]{13}'                     # Amex
-        r'|6(?:011|5[0-9]{2})[0-9]{12})\b'    # Discover
-    ), "PAYMENT_CARD"),
-
-    # US bank routing numbers — 9-digit ABA format starting with 0-3
-    (_re.compile(r'\b(?:0[0-9]{8}|[1-3][0-9]{8})\b'), "ROUTING_NUMBER"),
-
-    # External email addresses — flag addresses outside @meridianpg.com
-    (_re.compile(
-        r'\b[A-Za-z0-9._%+\-]+@(?!meridianpg\.com\b)[A-Za-z0-9.\-]+\.[A-Za-z]{2,7}\b'
-    ), "EXTERNAL_EMAIL"),
-]
-
-
-def _scan_output(text: str) -> tuple[str, list[str]]:
-    """
-    Scan output text for PII. Returns (redacted_text, [violation_types]).
-    If no PII found: (original_text, []).
-    Detected values are replaced with [REDACTED:<TYPE>].
-    """
-    violations: list[str] = []
-    result = text
-    for pattern, label in _OUTPUT_PII_PATTERNS:
-        if pattern.search(result):
-            violations.append(label)
-            result = pattern.sub(f"[REDACTED:{label}]", result)
-    return result, violations
+# ── Safety ────────────────────────────────────────────────────────────────────
+# Input prompt-injection defence (_check_injection, MAX_QUESTION_LENGTH) and
+# output PII scanning (_scan_output) live in utils.py. Endpoints call them and
+# record _metrics["safety_events"] / _metrics["output_safety_events"] on a hit.
 
 
 # ── Model routing ─────────────────────────────────────────────────────────────
@@ -394,7 +272,7 @@ def _execute_agent_tool(name: str, inputs: dict) -> str:
         if not results:
             return f"No results for '{inputs.get('keyword', '')}'"
         return json.dumps(
-            [{k: v for k, v in n.items() if k != "_labels"} for n in results[:10]],
+            [{k: v for k, v in n.items() if k not in ("_labels", "_match")} for n in results[:10]],
             default=str,
         )
     if name == "get_entity":
@@ -452,6 +330,7 @@ def get_metrics():
     total_queries = (
         _metrics["query_count"]
         + _metrics["agent_query_count"]
+        + _metrics["orchestrate_query_count"]
         + _metrics["direct_query_count"]
     )
     total_input = _metrics["total_input_tokens"]
@@ -467,6 +346,7 @@ def get_metrics():
             "total": total_queries,
             "standard": _metrics["query_count"],
             "agent": _metrics["agent_query_count"],
+            "multi_agent": _metrics["orchestrate_query_count"],
             "direct_no_llm": _metrics["direct_query_count"],
         },
         "latency": {
@@ -602,7 +482,7 @@ def create_relationship(body: RelationshipCreate):
 def search(
     q: str = Query(..., min_length=1),
     type: str = Query(None),
-    mode: str = Query("hybrid", description="hybrid (BM25) or keyword (substring)"),
+    mode: str = Query("hybrid", description="hybrid (BM25 + semantic embeddings via RRF) or keyword (substring)"),
 ):
     if mode == "hybrid":
         return g.hybrid_search_nodes(q, label=type)
@@ -639,18 +519,7 @@ class QueryRequest(BaseModel):
     question: str
 
 
-def _format_graph(graph: dict) -> str:
-    lines = ["=== NODES ==="]
-    for n in graph["nodes"]:
-        props = {k: v for k, v in n.items() if k not in ("id", "label", "_labels")}
-        lines.append(
-            f"[{n['label']}] id={n['id']} | "
-            + " | ".join(f"{k}={v}" for k, v in props.items() if v)
-        )
-    lines.append("\n=== RELATIONSHIPS ===")
-    for r in graph["relationships"]:
-        lines.append(f"{r['from_id']} --[{r['type']}]--> {r['to_id']}")
-    return "\n".join(lines)
+# _format_graph lives in utils.py.
 
 
 # ── Standard query (full-graph context + prompt caching) ─────────────────────
@@ -918,6 +787,228 @@ async def query_graph_agent(body: QueryRequest):
 
     return StreamingResponse(
         agent_stream(),
+        media_type="text/event-stream",
+        headers={"X-Accel-Buffering": "no", "Cache-Control": "no-cache"},
+    )
+
+
+# ── Multi-agent orchestration (planner → parallel workers → synthesizer) ───────
+# Additive endpoint. The standard /query and /query/agent paths are unchanged.
+# A planner decomposes the question into independent sub-questions; one worker
+# agent (each a bounded tool-calling loop over the same graph tools) researches
+# each in parallel; a synthesizer merges the findings into one grounded answer.
+# Per-role model routing demonstrates cost control: cheap workers, capable synth.
+
+ORCH_PLANNER_MODEL = os.getenv("ORCH_PLANNER_MODEL", "claude-sonnet-4-6")
+ORCH_WORKER_MODEL = os.getenv("ORCH_WORKER_MODEL", "claude-haiku-4-5-20251001")
+ORCH_SYNTH_MODEL = os.getenv("ORCH_SYNTH_MODEL", "claude-sonnet-4-6")
+ORCH_MAX_SUBTASKS = int(os.getenv("ORCH_MAX_SUBTASKS", "4"))
+ORCH_WORKER_MAX_ITERS = 5
+
+PLANNER_TOOL = {
+    "name": "submit_plan",
+    "description": (
+        "Submit the decomposition of the user's question into independent "
+        "sub-questions to be researched in parallel."
+    ),
+    "input_schema": {
+        "type": "object",
+        "properties": {
+            "subtasks": {
+                "type": "array",
+                "description": "2 to 4 independent, self-contained sub-questions.",
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "id": {"type": "string", "description": "Short id, e.g. s1"},
+                        "question": {"type": "string"},
+                    },
+                    "required": ["question"],
+                },
+            }
+        },
+        "required": ["subtasks"],
+    },
+}
+
+
+@traceable(name="orchestrate_plan", run_type="chain",
+           metadata={"system": "cogni-graph", "domain": "proptech"})
+async def _make_plan(question: str, model: str) -> tuple[list[dict], int, int]:
+    """Planner agent: decompose the question via a forced submit_plan tool call.
+    Returns (subtasks, input_tokens, output_tokens)."""
+    resp = await _anthropic.messages.create(
+        model=model,
+        max_tokens=1024,
+        system=PLANNER_SYSTEM_PROMPT,
+        tools=[PLANNER_TOOL],
+        tool_choice={"type": "tool", "name": "submit_plan"},
+        messages=[{"role": "user", "content": question}],
+    )
+    in_tok = getattr(resp.usage, "input_tokens", 0)
+    out_tok = getattr(resp.usage, "output_tokens", 0)
+    subtasks: list[dict] = []
+    for block in resp.content:
+        if block.type == "tool_use" and block.name == "submit_plan":
+            raw = block.input.get("subtasks", []) or []
+            for i, st in enumerate(raw[:ORCH_MAX_SUBTASKS]):
+                q = (st or {}).get("question", "").strip()
+                if q:
+                    subtasks.append({"id": st.get("id") or f"s{i + 1}", "question": q})
+            break
+    return subtasks, in_tok, out_tok
+
+
+@traceable(name="orchestrate_worker", run_type="chain",
+           metadata={"system": "cogni-graph", "domain": "proptech"})
+async def _run_worker(subtask_id: str, subquestion: str, model: str) -> dict:
+    """One worker sub-agent: a bounded tool-calling loop scoped to a single
+    sub-question. Returns {id, question, answer, tool_calls, in, out}."""
+    messages: list[dict] = [{"role": "user", "content": subquestion}]
+    tool_calls = 0
+    answer = ""
+    in_tok = 0
+    out_tok = 0
+    for _ in range(ORCH_WORKER_MAX_ITERS):
+        resp = await _anthropic.messages.create(
+            model=model,
+            max_tokens=2048,
+            system=WORKER_SYSTEM_PROMPT,
+            tools=AGENT_TOOLS,
+            messages=messages,
+        )
+        in_tok += getattr(resp.usage, "input_tokens", 0)
+        out_tok += getattr(resp.usage, "output_tokens", 0)
+        if resp.stop_reason == "tool_use":
+            assistant_content: list[dict] = []
+            tool_results: list[dict] = []
+            for block in resp.content:
+                if block.type == "text" and block.text:
+                    assistant_content.append({"type": "text", "text": block.text})
+                elif block.type == "tool_use":
+                    tool_calls += 1
+                    result = _execute_agent_tool(block.name, block.input)
+                    assistant_content.append(
+                        {"type": "tool_use", "id": block.id, "name": block.name, "input": block.input}
+                    )
+                    tool_results.append(
+                        {"type": "tool_result", "tool_use_id": block.id, "content": result}
+                    )
+            messages = messages + [
+                {"role": "assistant", "content": assistant_content},
+                {"role": "user", "content": tool_results},
+            ]
+        elif resp.stop_reason == "end_turn":
+            answer = "".join(b.text for b in resp.content if hasattr(b, "text"))
+            break
+    return {
+        "id": subtask_id, "question": subquestion, "answer": answer,
+        "tool_calls": tool_calls, "in": in_tok, "out": out_tok,
+    }
+
+
+@app.post("/query/orchestrate")
+async def query_graph_orchestrate(body: QueryRequest):
+    """
+    Multi-agent query mode: planner → parallel worker sub-agents → synthesizer.
+
+    SSE event types:
+      plan            — the decomposed sub-questions + planner model
+      subagent_start  — a worker sub-agent began (id, question, model)
+      subagent_result — a worker finished (id, answer preview, tool_calls)
+      synthesis       — the synthesizer started (model)
+      text            — final synthesized answer tokens
+      safety_warning  — PII redaction occurred in the final answer
+      done            — completion with sub-agent + tool counts, latency, models
+    """
+    import asyncio
+
+    if not body.question.strip():
+        raise HTTPException(422, "question must not be empty")
+
+    violation = _check_injection(body.question)
+    if violation:
+        _metrics["safety_events"] += 1
+        raise HTTPException(400, f"Question rejected by safety filter: {violation}")
+
+    t_start = time.time()
+
+    async def orchestrate_stream():
+        total_in = 0
+        total_out = 0
+        try:
+            # 1. Plan
+            plan, p_in, p_out = await _make_plan(body.question, ORCH_PLANNER_MODEL)
+            total_in += p_in
+            total_out += p_out
+            if not plan:  # planner returned nothing → degrade to a single sub-agent
+                plan = [{"id": "s1", "question": body.question}]
+            yield f"data: {json.dumps({'type': 'plan', 'subtasks': plan, 'planner_model': ORCH_PLANNER_MODEL})}\n\n"
+            for st in plan:
+                yield f"data: {json.dumps({'type': 'subagent_start', 'id': st['id'], 'question': st['question'], 'model': ORCH_WORKER_MODEL})}\n\n"
+
+            # 2. Workers in parallel; emit each result as it completes
+            results: list[dict] = []
+            coros = [_run_worker(st["id"], st["question"], ORCH_WORKER_MODEL) for st in plan]
+            for fut in asyncio.as_completed(coros):
+                res = await fut
+                total_in += res["in"]
+                total_out += res["out"]
+                results.append(res)
+                preview = res["answer"][:600] + ("…" if len(res["answer"]) > 600 else "")
+                yield f"data: {json.dumps({'type': 'subagent_result', 'id': res['id'], 'answer': preview, 'tool_calls': res['tool_calls']})}\n\n"
+
+            # 3. Synthesize (streamed); buffer first so PII scan sees whole tokens
+            yield f"data: {json.dumps({'type': 'synthesis', 'model': ORCH_SYNTH_MODEL})}\n\n"
+            findings = "\n\n".join(
+                f"### Sub-question: {r['question']}\n{r['answer'] or '(no answer)'}"
+                for r in sorted(results, key=lambda r: r["id"])
+            )
+            synth_user = (
+                f"Original question: {body.question}\n\n"
+                f"Findings from research sub-agents:\n{findings}\n\n"
+                "Synthesize a single, coherent answer to the original question, "
+                "grounded only in these findings."
+            )
+            full_text = ""
+            async with _anthropic.messages.stream(
+                model=ORCH_SYNTH_MODEL,
+                max_tokens=2048,
+                system=SYNTHESIZER_SYSTEM_PROMPT,
+                messages=[{"role": "user", "content": synth_user}],
+            ) as stream:
+                async for text in stream.text_stream:
+                    full_text += text
+                final_message = await stream.get_final_message()
+                total_in += getattr(final_message.usage, "input_tokens", 0)
+                total_out += getattr(final_message.usage, "output_tokens", 0)
+
+            safe_text, violations = _scan_output(full_text)
+            if violations:
+                _metrics["output_safety_events"] += 1
+                yield f"data: {json.dumps({'type': 'safety_warning', 'violations': violations})}\n\n"
+            for i in range(0, len(safe_text), 80):
+                yield f"data: {json.dumps({'type': 'text', 'content': safe_text[i:i + 80]})}\n\n"
+
+            # 4. Metrics (additive) — record one multi-agent query + per-role model calls
+            latency = (time.time() - t_start) * 1000
+            usage = SimpleNamespace(
+                input_tokens=total_in, output_tokens=total_out, cache_read_input_tokens=0
+            )
+            _update_metrics("orchestrate", latency, usage, model="")
+            for m in (ORCH_PLANNER_MODEL, ORCH_SYNTH_MODEL):
+                if m in _metrics["model_routes"]:
+                    _metrics["model_routes"][m] += 1
+            if ORCH_WORKER_MODEL in _metrics["model_routes"]:
+                _metrics["model_routes"][ORCH_WORKER_MODEL] += len(plan)
+
+            yield f"data: {json.dumps({'type': 'done', 'model': f'multi-agent · {len(plan)} sub-agents', 'route_reason': f'{len(plan)} parallel sub-agents', 'subtasks': len(plan), 'tool_calls': sum(r['tool_calls'] for r in results), 'latency_ms': round(latency), 'models': {'planner': ORCH_PLANNER_MODEL, 'worker': ORCH_WORKER_MODEL, 'synthesizer': ORCH_SYNTH_MODEL}})}\n\n"
+        except Exception as exc:
+            _metrics["errors"] += 1
+            yield f"data: {json.dumps({'type': 'error', 'content': str(exc)})}\n\n"
+
+    return StreamingResponse(
+        orchestrate_stream(),
         media_type="text/event-stream",
         headers={"X-Accel-Buffering": "no", "Cache-Control": "no-cache"},
     )

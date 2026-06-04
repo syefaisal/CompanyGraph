@@ -3,6 +3,8 @@ from typing import Any, Optional
 from neo4j import GraphDatabase
 from dotenv import load_dotenv
 
+import embeddings
+
 load_dotenv()
 
 _driver = None
@@ -157,6 +159,13 @@ def list_nodes(label: str = None, limit: int = 100) -> list[dict]:
     return [node_dict(r["n"]) for r in rows]
 
 
+# Minimum cosine similarity for a node to count as a semantic match. Below this,
+# matches are noise: nonsense queries top out around 0.18 against this corpus
+# while genuine matches sit at 0.2+. Prevents the semantic arm from returning
+# nearest neighbours for queries with no real relevance. Env-overridable.
+_SEMANTIC_MIN_COSINE = float(os.getenv("SEMANTIC_MIN_COSINE", "0.2"))
+
+
 def _tokenize(text: str) -> list[str]:
     import re
     return re.findall(r"\w+", text.lower())
@@ -193,19 +202,43 @@ def _bm25_score(
     return score
 
 
+def _rrf_fuse(*ranked_id_lists: list[str], k: int = 60) -> dict[str, float]:
+    """Reciprocal Rank Fusion: combine ranked id lists into id -> fused score.
+
+    Each list contributes 1 / (k + rank) per document (rank is 0-based). A
+    document absent from a list simply contributes nothing from that arm, so
+    semantic-only and lexical-only hits both survive the fusion.
+    """
+    fused: dict[str, float] = {}
+    for ranked in ranked_id_lists:
+        for rank, node_id in enumerate(ranked):
+            fused[node_id] = fused.get(node_id, 0.0) + 1.0 / (k + rank)
+    return fused
+
+
 def hybrid_search_nodes(keyword: str, label: str = None, top_k: int = 20) -> list[dict]:
-    """BM25 lexical search over all node text fields. Falls back to substring search on zero results."""
+    """True hybrid search: BM25 lexical + semantic embeddings fused via RRF.
+
+    The lexical arm is BM25 over all node text fields. The semantic arm embeds
+    the query and corpus with a local sentence-transformers model and ranks by
+    cosine similarity. The two ranked lists are merged with Reciprocal Rank
+    Fusion. If embeddings are unavailable the search degrades to pure BM25, and
+    a zero-result lexical query falls back to substring search.
+    """
     label_filter = f":{label}" if label else ""
     rows = run(f"MATCH (n{label_filter}) RETURN n LIMIT 500")
     if not rows:
         return []
 
     nodes = [node_dict(r["n"]) for r in rows]
-    corpus = [_tokenize(_node_to_text(n)) for n in nodes]
+    texts = [_node_to_text(n) for n in nodes]
+    corpus = [_tokenize(t) for t in texts]
     query_tokens = _tokenize(keyword)
 
     if not query_tokens:
         return nodes[:top_k]
+
+    by_id = {n["id"]: n for n in nodes}
 
     N = len(corpus)
     avgdl = sum(len(d) for d in corpus) / N
@@ -215,12 +248,59 @@ def hybrid_search_nodes(keyword: str, label: str = None, top_k: int = 20) -> lis
         for term in set(doc):
             df[term] = df.get(term, 0) + 1
 
-    scored = [
-        (_bm25_score(query_tokens, corpus[i], df, N, avgdl), nodes[i])
+    bm25_scored = [
+        (_bm25_score(query_tokens, corpus[i], df, N, avgdl), nodes[i]["id"])
         for i in range(N)
     ]
-    scored.sort(key=lambda x: x[0], reverse=True)
-    results = [node for score, node in scored if score > 0][:top_k]
+    bm25_scored.sort(key=lambda x: x[0], reverse=True)
+    bm25_ranked = [nid for score, nid in bm25_scored if score > 0]
+    bm25_score_by_id = {nid: score for score, nid in bm25_scored}
+
+    # Semantic arm (local embeddings); empty list if the model is unavailable.
+    semantic_ranked: list[str] = []
+    sem_score_by_id: dict[str, float] = {}
+    if embeddings.is_available():
+        query_vec = embeddings.embed_query(keyword)
+        doc_vecs = embeddings.embed_texts(texts)
+        if query_vec and doc_vecs:
+            sem_scored = [
+                (embeddings.cosine(query_vec, doc_vecs[i]), nodes[i]["id"])
+                for i in range(N)
+            ]
+            sem_scored.sort(key=lambda x: x[0], reverse=True)
+            sem_score_by_id = {nid: score for score, nid in sem_scored}
+            semantic_ranked = [
+                nid for score, nid in sem_scored if score >= _SEMANTIC_MIN_COSINE
+            ][:top_k * 2]
+
+    lexical_set = set(bm25_ranked)
+    semantic_set = set(semantic_ranked)
+
+    def _attach_match(nid: str) -> dict:
+        """Tag a result node with which arm(s) matched it, for UI badges."""
+        node = by_id[nid]
+        is_semantic = nid in semantic_set
+        node["_match"] = {
+            "lexical": nid in lexical_set,
+            "semantic": is_semantic,
+            "bm25_score": round(bm25_score_by_id.get(nid, 0.0), 3),
+            # cosine of the top-ranked semantic match; None when the arm is off
+            "semantic_score": (
+                round(sem_score_by_id[nid], 3)
+                if is_semantic and nid in sem_score_by_id
+                else None
+            ),
+        }
+        return node
+
+    if not semantic_ranked:
+        # Pure-BM25 path (embeddings unavailable): preserve prior behavior.
+        results = [_attach_match(nid) for nid in bm25_ranked][:top_k]
+        return results if results else search_nodes(keyword, label)
+
+    fused = _rrf_fuse(bm25_ranked, semantic_ranked)
+    ranked_ids = sorted(fused, key=lambda nid: fused[nid], reverse=True)
+    results = [_attach_match(nid) for nid in ranked_ids][:top_k]
 
     return results if results else search_nodes(keyword, label)
 

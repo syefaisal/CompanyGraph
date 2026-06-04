@@ -2,7 +2,7 @@
 ## CogniGraph — Agentic AI Knowledge Graph for PropTech
 ### Target role: Lead AI Engineer, RealPage
 
-**Total runtime:** ~12 minutes  
+**Total runtime:** ~13 minutes  
 **Format:** Screen recording with voiceover  
 
 **Prep checklist before recording:**
@@ -19,29 +19,46 @@
 
 ---
 
-## SCENE 1 — Opening & Problem Statement
+## SCENE 1 — Opening: Problem & Solution
 **Duration: ~45 seconds**
 
 **ON SCREEN:** `README.md` open in editor — top section visible
 
-> "Property technology is a domain where decisions have real legal, financial, and operational consequences. Who approved a lease policy change? Which products are in scope for a new GDPR requirement? Which engineer owns the workflow that would break if someone left the company?
+> "**The problem:** every company's knowledge is buried in documents — briefs, wikis, reports, decision logs. And the most valuable part isn't the words, it's the *connections*: who owns what, which product a decision affects, what breaks if a person leaves. You can't get that structure back by keyword-searching a pile of files.
 >
-> These are not semantic search questions. They are structural questions — and they need a system built around relationships, not document chunks.
+> **The solution is CogniGraph:** It takes a complicated company document, and LLM extracts the entities and relationships into a structured knowledge graph. 
+> Then user can questions in plain natural language — and an agent reasons across the graph to answer, single-agent or multi-agent, backed by hybrid search, model routing, observability, and safety guardrails. 
+> This is an **agentic AI solution** end to end: the LLM doesn't just answer — it plans, calls tools, and decides its own next step at every stage.
 >
-> What I'm going to show you is CogniGraph: an agentic AI platform I built to demonstrate the architecture I'd bring to the RealPage team. Knowledge graph, multi-agent tool-calling, hybrid search, three-tier model routing, LangSmith tracing, output safety guardrails, a CI/CD pipeline, and an offline evaluation harness — all themed around a PropTech company managing residential and commercial properties.
+> The whole demo runs on one scenario: **Meridian Property Group**, a fictional PropTech SaaS company. Its company brief becomes a graph of people, products, customers, workflows, and decisions — on fully synthetic data, so there's no real PII in a system that's all about privacy and compliance.
 >
 > Let me walk through it layer by layer."
 
-**JD ALIGNMENT:** Establishes PropTech domain relevance and previews the full architecture story.
+**JD ALIGNMENT:** States the problem (knowledge locked in documents), the solution (Claude extracts a knowledge graph, queried in natural language), and the scenario (Meridian Property Group).
 
 ---
 
-## SCENE 2 — The Data: PropTech Knowledge Graph
+## SCENE 2 — Document Ingestion Pipeline
+**Duration: ~40 seconds**
+
+**ON SCREEN:** Click `Source` tab — show the company brief document
+
+> "It all starts from a plain-text company brief — Meridian's.
+>
+> A single python script — `backend/doc_to_graph.py` — sends this document to LLM with a structured tool definition. `tool_choice: {type: 'tool'}` forces exactly one structured call that returns every entity and relationship. No free-form parsing. The output is validated directly against the Neo4j schema.
+>
+> This is the realistic ingestion path for any organisation: unstructured document → LLM extraction → graph database. The same pipeline works for org charts, engineering RFCs, or sales notes — a reusable ingestion framework. Let's look at the graph it produces."
+
+**JD ALIGNMENT:** *"Reusable RAG pipelines and ingestion frameworks; prompting, tool use, function calling."*
+
+---
+
+## SCENE 3 — The Data: PropTech Knowledge Graph
 **Duration: ~60 seconds**
 
 **ON SCREEN:** Browser at `http://localhost:5173` — Graph tab
 
-> "This is the Meridian Property Group knowledge graph. Thirty nodes, seventy-one edges. Five entity types, all modelled after real PropTech concerns.
+> "And here's the graph that brief produced. Thirty nodes, seventy-one edges. Five entity types, all modelled after real PropTech concerns.
 >
 > Blue nodes are people — engineers, a compliance director, a leasing director. Purple nodes are products — LeaseTrack, MaintenanceOS, TenantPay. Green nodes are customers — property management firms, an HOA, a commercial REIT. Orange nodes are workflows — Lease Renewal, Work Order Processing, Fair Housing Audit. Red nodes are decisions — the GDPR and CCPA overhaul, a product deprecation, a commercial market expansion."
 
@@ -49,24 +66,9 @@
 
 > "The Fair Housing Audit workflow is owned by the Director of Compliance. The Lease Renewal workflow depends on it — every lease renewal must pass a fair housing check first. And the GDPR decision directly affects both LeaseTrack and TenantPay, the two products that handle the most tenant PII.
 >
-> These aren't hand-crafted. They were extracted from a plain-text company brief by Claude using structured tool-calling — which I'll show next. The domain model reflects real PropTech risk and compliance structure."
+> None of this was hand-crafted. It was all extracted from that plain-text brief by Claude using the structured tool-calling pipeline I just showed — the domain model reflects real PropTech risk and compliance structure."
 
 **JD ALIGNMENT:** *"Knowledge graphs; designing AI products in domains with strong regulatory or privacy constraints; PropTech domain needs."*
-
----
-
-## SCENE 3 — Document Ingestion Pipeline
-**Duration: ~40 seconds**
-
-**ON SCREEN:** Click `Source` tab — show the company brief document
-
-> "The source of this graph is a plain-text company brief. No schema required from the author.
->
-> A single script — `backend/doc_to_graph.py` — sends this document to Claude Opus with a structured tool definition. `tool_choice: {type: 'tool'}` forces exactly one structured call that returns every entity and relationship. No free-form parsing. The output is validated directly against the Neo4j schema.
->
-> This is the realistic ingestion path for any organisation: unstructured document → LLM extraction → graph database. The same pipeline works for org charts, engineering RFCs, or sales notes. It's a reusable RAG ingestion framework."
-
-**JD ALIGNMENT:** *"Reusable RAG pipelines and ingestion frameworks; prompting, tool use, function calling."*
 
 ---
 
@@ -109,8 +111,8 @@
 
 ---
 
-## SCENE 5 — Observe Tab: Live Metrics & LangSmith Feed
-**Duration: ~75 seconds**
+## SCENE 5 — Observe Tab: Live Metrics, Caching & LangSmith Feed
+**Duration: ~90 seconds**
 
 **ON SCREEN:** Click `Observe` tab in the header
 
@@ -122,57 +124,55 @@
 >
 > Below that is the budget status. There's a `DAILY_COST_LIMIT_USD` environment variable — when spending hits the limit, the system automatically forces all queries to Haiku regardless of complexity, and shows an amber alert here. You reset it with a single API call, no restart needed.
 >
-> The model selection strategy section shows the routing distribution as horizontal bars — Direct, Haiku, Sonnet — with percentages and a token breakdown. You can see at a glance whether your cost profile matches your intent.
+> The model selection strategy section shows the routing distribution as horizontal bars — Direct, Haiku, Sonnet — with percentages and a token breakdown. You can see at a glance whether your cost profile matches your intent."
+
+**ON SCREEN:** Point to the **cached tokens** figure in the token breakdown
+
+> "And this is where prompt caching shows up. The full knowledge graph is serialized once and marked as an ephemeral cache block, so every query after the first reads it at a tenth of the input cost — that's the cached-tokens counter climbing, and it's what keeps the cost line flat as traffic grows.
 >
-> And at the bottom: a live LangSmith trace feed. Every agent query, every tool call, every LLM turn — latency and token counts per run, pulled server-side so the API key never touches the browser."
+> I'll be precise about what caching buys here, because the senior judgment is knowing when it matters: at this scale it's a cost lever, not a latency one. Output generation dominates wall-clock time, so caching the input prefix buys cost headroom, not speed. On a larger context — long documents, big system prompts — the same mechanism starts paying back in latency too."
+
+**ON SCREEN:** Scroll to the LangSmith trace feed
+
+> "And at the bottom: a live LangSmith trace feed. Every agent query, every tool call, every LLM turn — latency and token counts per run, pulled server-side so the API key never touches the browser."
 
 **ON SCREEN:** Point to a run in the LangSmith table
 
 > "This is the same trace data available in the LangSmith UI — but surfaced here for a stakeholder who doesn't have a LangSmith login. That's the kind of observability thinking that separates a production AI platform from a prototype."
 
-**JD ALIGNMENT:** *"Observability, logging, and incident response for AI systems; model routing and cost management; SLAs/SLOs; communicating AI strategy to leadership and cross-functional teams."*
+**JD ALIGNMENT:** *"Observability, logging, and incident response for AI systems; semantic caching; model routing and cost management; SLAs/SLOs; communicating AI strategy to leadership and cross-functional teams."*
 
 ---
 
 ## SCENE 6 — Hybrid Search
-**Duration: ~30 seconds**
+**Duration: ~40 seconds**
 
 **ON SCREEN:** Terminal. Run:
 ```bash
 curl "http://localhost:8000/search?q=compliance+audit"
 ```
 
-> "The search layer uses BM25 — proper lexical ranking, not substring matching. BM25 weights terms by inverse document frequency, so rare domain terms like 'compliance' or 'GDPR' score higher than common words.
+> "The search layer is a true hybrid retriever — two arms fused together. The first is BM25: proper lexical ranking that weights terms by inverse document frequency, so rare domain terms like 'compliance' or 'GDPR' score higher than common words.
 >
-> Result: David Chen first — Director of Compliance. Then the GDPR decision, then the Fair Housing Audit. The right ranking, with no vector database at this scale.
+> For 'compliance audit' it surfaces the Fair Housing Audit, David Chen — Director of Compliance — and the GDPR decision. The right ranking on exact terms."
+
+**ON SCREEN:** Switch to the UI search box (Graph tab). Type **`protecting user information`** with the toggle on **Keyword** → no results. Flip to **Hybrid**:
+```bash
+# equivalent API calls
+curl "http://localhost:8000/search?q=protecting+user+information&mode=keyword"   # → []
+curl "http://localhost:8000/search?q=protecting+user+information&mode=hybrid"    # → GDPR decision
+```
+
+> "Now watch this. 'Protecting user information' — none of those words appear in the GDPR decision. In Keyword mode, substring search returns nothing. Flip to Hybrid and the second arm kicks in: it embeds the query and every node with a local sentence-transformers model and ranks by cosine similarity — and the GDPR and CCPA Compliance Overhaul comes back first.
 >
-> The architecture is explicit: BM25 now, dense vector embeddings when the graph grows. The retrieval layer is designed to evolve."
+> See the badge on the result — 'semantic'. That's the embedding arm matching meaning, not words. When a result matches both arms it's tagged 'lexical' and 'semantic'. The two rankings are fused with Reciprocal Rank Fusion — sparse plus dense, lexical precision plus semantic recall — and it runs locally, no API key, no vector database to operate."
 
 **JD ALIGNMENT:** *"RAG architectures, hybrid search, knowledge graphs; retrieval optimization techniques."*
 
 ---
 
-## SCENE 7 — Standard Query: Streaming & Prompt Caching
-**Duration: ~60 seconds**
-
-**ON SCREEN:** Query tab. Click `Which products does Sunstone Residential use and who built them?` from the Haiku section
-
-> "This is a customer-360 question — eleven words, no complexity indicators — so it routes to Haiku. Watch the tokens arrive in real time."
-
-**ON SCREEN:** Response streams in, blue badge appears
-
-> "Server-sent events. The API opens a streaming response and forwards tokens to the browser as they arrive.
->
-> Under the hood, the full knowledge graph is serialized into the system prompt and marked as a cached block with Anthropic's prompt caching API. The first query pays full token cost. Every subsequent query within five minutes hits the cache at ten times lower input cost — visible as 'cached tokens' in the Observe tab.
->
-> The blue Haiku badge and the two-second latency tell the whole story: right model, right cost, right answer."
-
-**JD ALIGNMENT:** *"Real-time streaming infrastructures; semantic caching; model selection strategy; cost management."*
-
----
-
-## SCENE 8 — Agentic Mode: Tool-Calling Loop
-**Duration: ~90 seconds**
+## SCENE 7 — Agentic Mode: Single-Agent Loop & Multi-Agent Orchestration
+**Duration: ~135 seconds**
 
 **ON SCREEN:** Switch to terminal. Run:
 ```bash
@@ -205,7 +205,43 @@ for line in sys.stdin:
 
 > "And immediately in the Observe tab — the trace appears. LLM turns, tool calls, latency, tokens. Everything captured without leaving the app."
 
-**JD ALIGNMENT:** *"Multi-agent and workflow orchestration — responder/thinker pattern, tool calling, agentic frameworks; real-time streaming; LLM-based application design — prompting, tool use, function calling."*
+**ON SCREEN:** Query tab → flip the mode toggle to **Multi-agent**. Ask a broad, comparative question:
+```
+What is Meridian's compliance posture, and which customers and products are most affected by the GDPR decision?
+```
+
+> "That was a single agent. For broad, comparative questions I took it further — true multi-agent orchestration. Watch the fan-out when I flip this toggle to Multi-agent.
+>
+> First a **planner** agent — on Sonnet — decomposes the question into independent sub-questions. Here it found three: the overall compliance posture, the affected customers, and the affected products. Then three **worker** agents — on Haiku — fan out and research each one *in parallel*, each with the full graph tool-belt. Watch them complete out of order — they're genuinely concurrent. Finally a **synthesizer** — Sonnet again — merges the findings into one grounded answer.
+>
+> And look at the routing: the planner and synthesizer use Sonnet, but the parallel workers use Haiku. That's cost-managed multi-agent — you spend the capable model only where reasoning matters, and parallelize the cheap research. The whole fan-out is live in the UI: the plan, each sub-agent's status and tool count, then the synthesis.
+>
+> Both modes share one data layer — the same graph tools the single agent used, the same safety filters, the same tracing. The multi-agent path is purely additive; the single-agent endpoint is untouched.
+>
+> And to be clear: there's no agent framework here — no LangGraph, no CrewAI. The orchestration is plain Python on the Anthropic SDK, with `asyncio` for the parallel fan-out. That's deliberate — I own every turn, so I can stream custom events, attach traces precisely, and route each role to the right model. The pattern is simple enough to own outright."
+
+**JD ALIGNMENT:** *"Multi-agent and workflow orchestration — planner/worker/synthesizer pattern with parallel sub-agents and per-role model routing; responder/thinker tool calling; real-time streaming; LLM-based application design — prompting, tool use, function calling."*
+
+---
+
+## SCENE 8 — MCP Server: The Graph as an Open Tool Surface
+**Duration: ~55 seconds**
+
+**ON SCREEN:** Switch to **Claude Desktop** (or Claude Code) with the `meridian-property-graph` MCP server connected. Show the tool list (the plug / tools icon).
+
+> "Everything you just saw runs inside my app. But I didn't want the knowledge graph locked behind my UI — so I also exposed it over the Model Context Protocol. MCP is the open standard for giving any AI client a typed set of tools. This is the same graph, now available to Claude Desktop, Claude Code, or any MCP-compatible host — with zero custom integration on their side."
+
+**ON SCREEN:** Point to the registered server and its tools
+
+> "The server is one file — `mcp_server.py`, built on FastMCP. It publishes eleven tools over stdio: eight read tools — list and get entities, hybrid search, shortest path, decision-impact tracing, workflow teams, customer-to-product mapping, a graph summary — and three write tools to add entities, connect them, or run raw Cypher.
+>
+> And the critical detail: these tools call the exact same `graph.py` data layer as the REST API and the in-app agent. The hybrid search you saw — BM25 plus semantic — is the same function here. One source of truth, three surfaces: REST, in-app agent, and now MCP."
+
+**ON SCREEN:** In Claude Desktop, type a natural-language question, e.g. *"Using the Meridian graph, what's the blast radius if MaintenanceOS is deprecated?"* — Claude calls `search_graph` → `trace_decision_impact` / `get_entity` and answers.
+
+> "I ask in plain language, and Claude picks the tools itself — searches the graph, traces the impact, and synthesizes an answer grounded in real graph data, not its training set. Registering it is a few lines in the client's MCP config pointing at `mcp run mcp_server.py`. That's the interoperability story: build the capability once, and it's instantly usable by the whole ecosystem of MCP clients."
+
+**JD ALIGNMENT:** *"LLM-based application design — tool use, function calling; agentic frameworks and interoperability; modular reusable back-end design; standards-based integration."*
 
 ---
 
@@ -278,14 +314,17 @@ python backend/eval.py
 ## SCENE 12 — Test Suite & CI/CD
 **Duration: ~45 seconds**
 
-**ON SCREEN:** Terminal. Run:
+**ON SCREEN:** Terminal (venv active — `which python3` shows `.venv/bin`). Run:
 ```bash
 python3 -m pytest tests/ -m "not llm" -q 2>&1 | tail -5
+# → 278 passed, 17 deselected
 ```
 
 > "Production AI systems need tests at every layer.
 >
-> 229 tests across five files. Unit tests for BM25 — IDF weighting, term frequency normalisation. Unit tests for model routing — mocked Neo4j, runs in half a second. Unit tests for the safety layer — 67 tests covering all five injection families, output PII patterns, and the false-positive suite that ensures legitimate PropTech questions are never blocked. Integration tests for graph operations. Full API integration tests."
+> 295 tests across six files. Unit tests for BM25 — IDF weighting, term frequency normalisation. Unit tests for model routing — mocked Neo4j, runs in half a second. Unit tests for the safety layer — covering all five injection families, output PII patterns, and the false-positive suite that ensures legitimate PropTech questions are never blocked. Unit tests for the document-to-graph extraction schema. Integration tests for graph operations. Full API integration tests.
+>
+> Notice the result: 278 passed, 17 deselected. That filter — `-m not llm` — is deliberate. Seventeen tests actually call Claude and cost money, so they're tagged and excluded from the fast push gate; they run on the nightly schedule instead. Tests that cost real dollars don't belong on every commit. That's the kind of CI economics decision you make when an AI system's test suite has a per-run price tag."
 
 **ON SCREEN:** Open `.github/workflows/ci.yml` briefly
 
@@ -304,13 +343,13 @@ python3 -m pytest tests/ -m "not llm" -q 2>&1 | tail -5
 
 > "Let me close with the architecture picture.
 >
-> Every decision in this system was made explicitly and documented. Neo4j over a vector database — because relationships are first-class in PropTech data. BM25 over substring search — because IDF weighting matters for domain-specific terms. Three-tier model routing — because not every query deserves a Sonnet call. Native Anthropic tool-calling over LangChain — because I want full visibility into every turn. LangSmith over custom logging — because traces should be searchable and feedable into eval datasets. Prompt versioning in YAML — because prompts are configuration, not code.
+> Every decision in this system was made explicitly and documented. Neo4j over a vector database — because relationships are first-class in PropTech data. Hybrid search — BM25 for lexical precision, local embeddings for semantic recall, fused with RRF — because real retrieval needs both sparse and dense, and it runs with no external service. Three-tier model routing — because not every query deserves a Sonnet call. Native Anthropic tool-calling over LangChain — because I want full visibility into every turn. LangSmith over custom logging — because traces should be searchable and feedable into eval datasets. Prompt versioning in YAML — because prompts are configuration, not code. And one data layer behind three surfaces — REST, in-app agent, and an MCP server — because the capability should be built once and exposed over an open standard, not locked in a single app.
 >
 > Section six of this document maps the project against the AI SDLC: data engineering, prompt development, retrieval architecture, offline evaluation, human evaluation, observability, governance. Not all green — the document also calls out the gaps and recommended next steps. That's how a lead engineer thinks: honest about what's done, explicit about what's next."
 
 **ON SCREEN:** Scroll to the maturity assessment table showing ✅/⚠️/❌
 
-> "The architecture I'd bring to RealPage is what you've just seen: agentic systems with real tool-calling loops, hybrid retrieval, model routing that manages cost and explains itself, full observability from metrics to LangSmith to human feedback, output safety guardrails for a PII-sensitive domain, and an evaluation harness that produces measurable numbers with automated regression alerting. That's the foundation for a production AI platform — not just a demo."
+> "Here are key features of this project: agentic systems with real tool-calling loops, hybrid retrieval, model routing that manages cost and explains itself, MCP interoperability that exposes the graph to any AI client over an open standard, full observability from metrics to LangSmith to human feedback, output safety guardrails for a PII-sensitive domain, and an evaluation harness that produces measurable numbers with automated regression alerting. That's the foundation for a production AI platform — not just a demo."
 
 **JD ALIGNMENT:** Closes the full loop across all six JD responsibility areas.
 
@@ -318,18 +357,25 @@ python3 -m pytest tests/ -m "not llm" -q 2>&1 | tail -5
 
 ## Recording Notes
 
-**Browser tabs to have open before recording:**
+**Browser tabs / apps to have open before recording:**
 1. `http://localhost:5173` — UI (start on Graph tab)
 2. `http://localhost:5173` (second tab) — pre-navigated to Observe tab
 3. `smith.langchain.com → Projects → cogni-graph`
 4. `docs/DESIGN_DECISIONS.md` in editor
+5. **Claude Desktop** (or Claude Code) with the `meridian-property-graph` MCP server already connected — verify the tools icon lists its 11 tools before recording Scene 8
 
 **Terminal commands to pre-type (don't run yet):**
 ```bash
-# Scene 6 — Hybrid search
-curl "http://localhost:8000/search?q=compliance+audit"
+# Activate the project venv FIRST — bare `python3` is system Python 3.9 and
+# lacks the deps (neo4j, etc.); this shell needs .venv (Python 3.11).
+source .venv/bin/activate   # verify with: which python3  → should show .venv/bin
 
-# Scene 8 — Agent endpoint with event display
+# Scene 6 — Hybrid search (BM25 + semantic, RRF)
+curl "http://localhost:8000/search?q=compliance+audit" | jq
+curl "http://localhost:8000/search?q=protecting+user+information&mode=hybrid" | jq   # semantic-only win
+curl "http://localhost:8000/search?q=protecting+user+information&mode=keyword" | jq  # → [] (no substring)
+
+# Scene 7 — Agent endpoint with event display
 curl -sN -X POST http://localhost:8000/query/agent \
   -H "Content-Type: application/json" \
   -d '{"question": "Trace the full compliance impact of the GDPR and CCPA overhaul decision."}' \
@@ -345,6 +391,31 @@ for line in sys.stdin:
         elif t == 'done': print(f'[done]      tool_calls={e.get(\"tool_calls\")}  model={e.get(\"model\")}  reason={e.get(\"route_reason\")}  latency={e.get(\"latency_ms\")}ms')
     except: pass
 "
+
+# Scene 7 (multi-agent) — planner → parallel workers → synthesizer
+curl -sN -X POST http://localhost:8000/query/orchestrate \
+  -H "Content-Type: application/json" \
+  -d '{"question": "What is Meridian'\''s compliance posture, and which customers and products are most affected by the GDPR decision?"}' \
+| grep "data:" | python3 -c "
+import sys, json
+final=''
+for line in sys.stdin:
+    try:
+        e = json.loads(line.strip()[6:]); t = e.get('type')
+        if t == 'plan': print(f'[plan]   {len(e[\"subtasks\"])} sub-questions'); [print(f'         {s[\"id\"]}: {s[\"question\"][:70]}') for s in e['subtasks']]
+        elif t == 'subagent_result': print(f'[worker] {e[\"id\"]} done — {e[\"tool_calls\"]} tool calls')
+        elif t == 'synthesis': print('[synth]  merging findings...')
+        elif t == 'text': final += e['content']
+        elif t == 'done': print(f'[done]   {e[\"subtasks\"]} sub-agents, {e[\"tool_calls\"]} tool calls, {e[\"latency_ms\"]}ms, models={e[\"models\"]}')
+    except: pass
+print('\n--- synthesized answer ---\n'+final[:400])
+"
+
+# Scene 8 — MCP server (register once in the client's MCP config, then ask in Claude Desktop)
+#   Claude Code:   claude mcp add meridian-property-graph -- .venv/bin/python backend/mcp_server.py
+#   or run standalone over stdio:
+mcp run backend/mcp_server.py
+#   Then in Claude Desktop ask: "Using the Meridian graph, what's the blast radius if MaintenanceOS is deprecated?"
 
 # Scene 9 — Injection blocked
 curl -s -X POST http://localhost:8000/query \
@@ -363,8 +434,7 @@ python3 -m pytest tests/ -m "not llm" -q 2>&1 | tail -5
 1. Scene 4 Direct: `list all workflows` (green badge)
 2. Scene 4 Haiku: `What is TenantPay and what is its current status?` (blue badge)
 3. Scene 4 Sonnet: `Trace the full impact of the GDPR and CCPA compliance overhaul.` (violet badge)
-4. Scene 7: `Which products does Sunstone Residential use and who built them?` (Haiku section)
-5. Scene 11: `Who is responsible for fair housing compliance and what decisions have they influenced?`
+4. Scene 11: `Who is responsible for fair housing compliance and what decisions have they influenced?`
 
 ---
 
@@ -372,24 +442,27 @@ python3 -m pytest tests/ -m "not llm" -q 2>&1 | tail -5
 
 | JD Requirement | Demo Scene |
 |---|---|
-| Model selection strategy (small vs. large, routing) | Scene 4, 5, 7 |
+| Model selection strategy (small vs. large, routing) | Scene 4, 5 |
 | Model selection visible to non-technical audience | Scene 4 (badge), Scene 5 (Observe bar chart) |
-| Multi-agent / tool calling / responder-thinker | Scene 8 |
-| RAG, hybrid search, knowledge graphs | Scenes 2, 6, 7 |
-| Real-time streaming | Scenes 7, 8 |
-| Reusable RAG pipelines and ingestion | Scene 3 |
-| Observability, logging, incident response | Scenes 5, 8 (Observe tab) |
+| Multi-agent / workflow orchestration (planner → parallel workers → synthesizer) | Scene 7 (Multi-agent mode) |
+| Single-agent tool calling / responder-thinker | Scenes 7, 8 (MCP) |
+| MCP / tool interoperability / standards-based integration | Scene 8 |
+| RAG, hybrid search, knowledge graphs | Scenes 3, 6 |
+| Real-time streaming | Scenes 4 (UI), 7 (SSE events) |
+| Reusable RAG pipelines and ingestion | Scene 2 |
+| Modular reusable back-end (one data layer, 3 surfaces) | Scenes 6, 7, 8 |
+| Observability, logging, incident response | Scenes 5, 7 (Observe tab) |
 | Evaluation frameworks (offline metrics, regression alerting) | Scene 10 |
 | Human evaluation workflows | Scene 11 |
-| GDPR / compliance / responsible AI | Scenes 2, 8 (agentic), 9 (security) |
+| GDPR / compliance / responsible AI | Scenes 3, 7 (agentic), 9 (security) |
 | PII handling / output safety guardrails | Scene 9 |
 | Prompt injection defence | Scene 9 |
-| LangSmith / AI experiment tracking | Scenes 5, 8, 10 |
+| LangSmith / AI experiment tracking | Scenes 5, 7, 10 |
 | Prompt versioning | Scene 13 (DESIGN_DECISIONS) |
 | Code quality / test standards | Scene 12 |
 | CI/CD pipeline | Scene 12 |
 | AI SDLC conformance | Scene 13 |
 | PropTech domain expertise | All scenes |
-| Cost management / right-sizing | Scenes 4, 5, 7 |
-| Semantic caching | Scene 7 |
+| Cost management / right-sizing | Scenes 4, 5 |
+| Semantic caching | Scene 5 |
 | Budget enforcement | Scene 5 (Observe budget bar) |

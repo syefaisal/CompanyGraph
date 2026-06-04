@@ -22,6 +22,8 @@ The six sample questions in the Query tab are each designed to demonstrate a dis
 
 **Agentic tool-calling loop** — in `/query/agent` mode, Claude calls `search_graph` → `trace_decision_impact` → `get_entity` in sequence, reasoning across results before answering. Demonstrates the **responder/thinker pattern**: the agent plans, executes tools, observes results, and synthesizes a final answer.
 
+**Multi-agent orchestration** — in `/query/orchestrate` mode (Query tab → **Multi-agent** toggle), a planner agent decomposes a broad question into independent sub-questions, parallel worker agents research each over the same graph tools, and a synthesizer merges them into one answer. Per-role model routing keeps it cost-managed (Sonnet planner/synthesizer, Haiku workers). Best for broad, comparative questions.
+
 **PropTech domain fit** — GDPR, CCPA, and fair housing compliance are the exact regulatory concerns a PropTech company faces. Shows domain awareness, not just generic AI architecture.
 
 **Observability** — `/metrics` records which model was used, how many tokens were consumed, whether the graph context cache was hit, and the estimated cost of this specific query.
@@ -34,7 +36,7 @@ The six sample questions in the Query tab are each designed to demonstrate a dis
 
 **Multi-hop reasoning** — Elena → `MADE` → Enter Commercial Market → `AFFECTS` → Apex Commercial. The path is discovered dynamically, not pre-computed.
 
-**Hybrid BM25 search** — finds both "Elena Rodriguez" and "Apex Commercial" accurately even though the query contains both names, because IDF weighting prevents common words from drowning out specific entity names.
+**Hybrid search** — a BM25 lexical arm and a semantic-embedding arm fused with Reciprocal Rank Fusion. It finds both "Elena Rodriguez" and "Apex Commercial" accurately even though the query contains both names (IDF weighting keeps common words from drowning out specific entity names), and the semantic arm also matches paraphrases — e.g. "protecting user information" surfaces the GDPR decision that shares none of those words.
 
 ---
 
@@ -77,7 +79,7 @@ The table below maps each sample question to the JD-aligned architectural capabi
 | Model routing (right-sizing) | Haiku | Sonnet | Sonnet | Haiku | Sonnet | Sonnet |
 | Agentic tool-calling loop | | ✓ | | | | ✓ |
 | Knowledge graph (structural query) | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
-| Hybrid BM25 search | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
+| Hybrid search (BM25 + semantic) | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
 | Multi-hop traversal | | ✓ | ✓ | ✓ | ✓ | |
 | Prompt caching (cost management) | | | | ✓ | | |
 | Shortest-path algorithm | | | ✓ | | | |
@@ -116,7 +118,7 @@ The badge also shows the exact routing reason (e.g. `'compliance' detected`) and
 ### Observe Tab Sections
 
 **Key Metrics** — four cards refreshed every 10 s:
-- Total queries with standard / agent / direct breakdown
+- Total queries with standard / agent / multi-agent / direct breakdown
 - Average latency across all queries
 - Session cost (USD) and cache hit rate
 - Safety events (input injection blocks + output PII detections)
@@ -439,7 +441,7 @@ curl -N -X POST http://localhost:8000/query/agent \
   -H "Content-Type: application/json" \
   -d '{"question": "trace the compliance impact of the GDPR decision"}'
 
-# Hybrid BM25 search
+# Hybrid search (BM25 + semantic embeddings via RRF)
 curl "http://localhost:8000/search?q=fair+housing+compliance"
 
 # Observability snapshot
@@ -452,7 +454,7 @@ curl http://localhost:8000/metrics
 # Unit tests only — no external services needed (~0.5 s)
 python3 -m pytest tests/test_unit_bm25.py tests/test_unit_routing.py -v
 
-# All tests except LLM calls — fast, 176 tests
+# All tests except LLM calls — fast, 278 tests
 python3 -m pytest tests/ -m "not llm"
 
 # Full suite including LLM tests (calls Claude, costs money)

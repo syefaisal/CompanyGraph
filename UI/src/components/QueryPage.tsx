@@ -1,8 +1,18 @@
 import { useState, useRef, useEffect, useCallback } from 'react'
 import {
   Send, Zap, Loader2, User, RotateCcw, ChevronRight,
-  ThumbsUp, ThumbsDown, CheckCircle, Flag, MessageSquare, X,
+  ThumbsUp, ThumbsDown, CheckCircle, Flag, MessageSquare, X, Network,
 } from 'lucide-react'
+
+type QueryMode = 'standard' | 'multi'
+
+interface SubAgent {
+  id: string
+  question: string
+  status: 'running' | 'done'
+  answer?: string
+  toolCalls?: number
+}
 
 interface Message {
   role: 'user' | 'assistant'
@@ -15,6 +25,11 @@ interface Message {
   routeReason?: string
   latencyMs?: number
   toolCalls?: number
+  // multi-agent mode
+  subAgents?: SubAgent[]
+  synthesizing?: boolean
+  subtasks?: number
+  models?: { planner: string; worker: string; synthesizer: string }
 }
 
 type Tier = 'direct' | 'haiku' | 'sonnet'
@@ -131,10 +146,59 @@ function truncate(text: string, n = 80) {
   return text.length > n ? text.slice(0, n).trimEnd() + '…' : text
 }
 
+// Live fan-out view for multi-agent mode: planner's sub-questions, each worker's
+// status (running/done) and tool count, expandable to its finding, plus a
+// synthesizing indicator before the merged answer streams in.
+function MultiAgentPanel({ subAgents, synthesizing }: { subAgents: SubAgent[]; synthesizing?: boolean }) {
+  const done = subAgents.filter((s) => s.status === 'done').length
+  return (
+    <div className="mb-3 rounded-xl border border-violet-200 bg-violet-50/40 overflow-hidden">
+      <div className="flex items-center gap-1.5 px-3 py-1.5 border-b border-violet-100 bg-violet-50">
+        <Network size={12} className="text-violet-500" />
+        <span className="text-[11px] font-semibold text-violet-700">
+          Multi-agent · {subAgents.length} sub-agent{subAgents.length !== 1 ? 's' : ''}
+        </span>
+        <span className="ml-auto text-[10px] text-violet-400">{done}/{subAgents.length} done</span>
+      </div>
+      <div className="divide-y divide-violet-100/70">
+        {subAgents.map((sa) => (
+          <details key={sa.id} className="group">
+            <summary className="flex items-start gap-2 px-3 py-2 cursor-pointer list-none hover:bg-violet-50/60">
+              <span className="mt-0.5 shrink-0">
+                {sa.status === 'done'
+                  ? <CheckCircle size={12} className="text-emerald-500" />
+                  : <Loader2 size={12} className="text-violet-400 animate-spin" />}
+              </span>
+              <span className="flex-1 text-xs text-slate-600 leading-snug">{sa.question}</span>
+              {sa.status === 'done' && sa.toolCalls != null && (
+                <span className="shrink-0 text-[10px] text-slate-400 mt-0.5">
+                  {sa.toolCalls} tool{sa.toolCalls !== 1 ? 's' : ''}
+                </span>
+              )}
+            </summary>
+            {sa.answer && (
+              <div className="px-3 pb-2.5 pl-7 text-xs text-slate-500 leading-relaxed whitespace-pre-wrap">
+                {sa.answer}
+              </div>
+            )}
+          </details>
+        ))}
+      </div>
+      {synthesizing && (
+        <div className="flex items-center gap-1.5 px-3 py-1.5 border-t border-violet-100 bg-violet-50/60">
+          <Loader2 size={11} className="text-violet-500 animate-spin" />
+          <span className="text-[11px] text-violet-600 font-medium">Synthesizing final answer…</span>
+        </div>
+      )}
+    </div>
+  )
+}
+
 export function QueryPage() {
   const [messages, setMessages] = useState<Message[]>([])
   const [input, setInput] = useState('')
   const [loading, setLoading] = useState(false)
+  const [mode, setMode] = useState<QueryMode>('standard')
   const [lastAsked, setLastAsked] = useState<string | null>(null)
   // Index of the message currently showing the flag comment form
   const [flaggingIdx, setFlaggingIdx] = useState<number | null>(null)
@@ -201,8 +265,18 @@ export function QueryPage() {
     setLoading(true)
     if (textareaRef.current) textareaRef.current.style.height = 'auto'
 
+    // Helper to patch the in-flight (last) assistant message
+    const patchLast = (fn: (m: Message) => Message) =>
+      setMessages((prev) => {
+        const next = [...prev]
+        const last = next[next.length - 1]
+        if (last?.role === 'assistant') next[next.length - 1] = fn(last)
+        return next
+      })
+
     try {
-      const res = await fetch('/api/query', {
+      const endpoint = mode === 'multi' ? '/api/query/orchestrate' : '/api/query'
+      const res = await fetch(endpoint, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ question }),
@@ -225,26 +299,38 @@ export function QueryPage() {
           try {
             const event = JSON.parse(line.slice(6))
             if (event.type === 'text') {
-              setMessages((prev) => {
-                const next = [...prev]
-                const last = next[next.length - 1]
-                if (last?.role === 'assistant') next[next.length - 1] = { ...last, content: last.content + event.content }
-                return next
-              })
+              patchLast((m) => ({ ...m, content: m.content + event.content }))
+            } else if (event.type === 'plan') {
+              patchLast((m) => ({
+                ...m,
+                subtasks: event.subtasks.length,
+                subAgents: event.subtasks.map((s: { id: string; question: string }) => ({
+                  id: s.id, question: s.question, status: 'running' as const,
+                })),
+              }))
+            } else if (event.type === 'subagent_result') {
+              patchLast((m) => ({
+                ...m,
+                subAgents: (m.subAgents ?? []).map((sa) =>
+                  sa.id === event.id
+                    ? { ...sa, status: 'done' as const, answer: event.answer, toolCalls: event.tool_calls }
+                    : sa
+                ),
+              }))
+            } else if (event.type === 'synthesis') {
+              patchLast((m) => ({ ...m, synthesizing: true }))
             } else if (event.type === 'done') {
-              setMessages((prev) => {
-                const next = [...prev]
-                const last = next[next.length - 1]
-                if (last?.role === 'assistant') next[next.length - 1] = {
-                  ...last,
-                  streaming: false,
-                  model: event.model,
-                  routeReason: event.route_reason,
-                  latencyMs: event.latency_ms,
-                  toolCalls: event.tool_calls,
-                }
-                return next
-              })
+              patchLast((m) => ({
+                ...m,
+                streaming: false,
+                synthesizing: false,
+                model: event.model,
+                routeReason: event.route_reason,
+                latencyMs: event.latency_ms,
+                toolCalls: event.tool_calls,
+                models: event.models,
+                subtasks: event.subtasks ?? m.subtasks,
+              }))
             } else if (event.type === 'error') {
               throw new Error(event.content)
             }
@@ -268,7 +354,7 @@ export function QueryPage() {
     } finally {
       setLoading(false)
     }
-  }, [loading])
+  }, [loading, mode])
 
   function onKeyDown(e: React.KeyboardEvent<HTMLTextAreaElement>) {
     if (e.key === 'Enter' && !e.shiftKey) {
@@ -467,9 +553,12 @@ export function QueryPage() {
                         <p className="text-sm leading-relaxed">{msg.content}</p>
                       ) : (
                         <div className="space-y-0.5">
+                          {msg.subAgents && msg.subAgents.length > 0 && (
+                            <MultiAgentPanel subAgents={msg.subAgents} synthesizing={msg.synthesizing} />
+                          )}
                           {msg.content
                             ? renderMarkdown(msg.content)
-                            : msg.streaming
+                            : msg.streaming && !msg.subAgents
                               ? <span className="text-slate-400 text-sm">Thinking…</span>
                               : null}
                           {msg.streaming && (
@@ -479,7 +568,38 @@ export function QueryPage() {
                       )}
 
                       {/* Routing decision badge — shown after streaming completes */}
-                      {msg.role === 'assistant' && !msg.streaming && !msg.error && msg.model && (() => {
+                      {msg.role === 'assistant' && !msg.streaming && !msg.error && (msg.model || msg.models) && (() => {
+                        const latency = msg.latencyMs ? (
+                          <span className="text-[10px] text-slate-400 ml-auto">
+                            {(msg.latencyMs / 1000).toFixed(1)}s
+                            {msg.toolCalls ? ` · ${msg.toolCalls} tool call${msg.toolCalls !== 1 ? 's' : ''}` : ''}
+                          </span>
+                        ) : null
+
+                        // Multi-agent: show which LLM ran each role (planner / workers / synthesizer)
+                        if (msg.models) {
+                          const roleChip = (role: string, model: string) => {
+                            const ml = modelLabel(model)
+                            return (
+                              <span className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-semibold border ${ml?.color ?? 'bg-slate-50 text-slate-600 border-slate-200'}`}>
+                                <span className="opacity-60 font-normal">{role}</span> {ml?.short ?? model}
+                              </span>
+                            )
+                          }
+                          return (
+                            <div className="mt-2.5 flex items-center gap-1.5 flex-wrap">
+                              <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-semibold border bg-violet-50 text-violet-700 border-violet-200">
+                                <Network size={10} /> Multi-agent
+                              </span>
+                              {roleChip('planner', msg.models.planner)}
+                              {roleChip(`${msg.subtasks ?? ''}× worker`.trim(), msg.models.worker)}
+                              {roleChip('synth', msg.models.synthesizer)}
+                              {latency}
+                            </div>
+                          )
+                        }
+
+                        // Standard / single-agent: single routing badge (Direct = no LLM)
                         const ml = modelLabel(msg.model)
                         if (!ml) return null
                         return (
@@ -492,12 +612,7 @@ export function QueryPage() {
                                 {msg.routeReason}
                               </span>
                             )}
-                            {msg.latencyMs && (
-                              <span className="text-[10px] text-slate-400 ml-auto">
-                                {(msg.latencyMs / 1000).toFixed(1)}s
-                                {msg.toolCalls ? ` · ${msg.toolCalls} tool call${msg.toolCalls !== 1 ? 's' : ''}` : ''}
-                              </span>
-                            )}
+                            {latency}
                           </div>
                         )
                       })()}
@@ -609,7 +724,33 @@ export function QueryPage() {
 
         {/* Input bar */}
         <div className="shrink-0 border-t border-slate-200 bg-white px-5 py-4 shadow-[0_-1px_3px_0_rgb(0,0,0,0.04)]">
-          <div className="max-w-2xl mx-auto flex gap-2.5 items-end">
+          <div className="max-w-2xl mx-auto">
+          {/* Query mode toggle */}
+          <div className="flex items-center gap-2 mb-2">
+            <span className="text-[10px] text-slate-400 uppercase tracking-wide font-medium">Mode</span>
+            <div className="flex items-center rounded-lg bg-slate-100 p-0.5">
+              {(['standard', 'multi'] as QueryMode[]).map((mo) => (
+                <button
+                  key={mo}
+                  onClick={() => setMode(mo)}
+                  disabled={loading}
+                  title={mo === 'multi'
+                    ? 'Planner decomposes the question, parallel sub-agents research, a synthesizer merges'
+                    : 'Single model answers from the full graph context'}
+                  className={`flex items-center gap-1 px-2.5 py-1 text-[11px] font-medium rounded-md transition-colors disabled:opacity-50 ${
+                    mode === mo ? 'bg-white text-indigo-600 shadow-sm' : 'text-slate-400 hover:text-slate-600'
+                  }`}
+                >
+                  {mo === 'multi' && <Network size={10} />}
+                  {mo === 'standard' ? 'Standard' : 'Multi-agent'}
+                </button>
+              ))}
+            </div>
+            {mode === 'multi' && (
+              <span className="text-[10px] text-slate-400">planner → parallel workers → synthesizer</span>
+            )}
+          </div>
+          <div className="flex gap-2.5 items-end">
             <div className="flex-1 bg-slate-50 border border-slate-200 rounded-xl overflow-hidden focus-within:border-indigo-400 focus-within:bg-white focus-within:shadow-sm transition-all">
               <textarea
                 ref={textareaRef}
@@ -634,6 +775,7 @@ export function QueryPage() {
                 ? <Loader2 size={15} className="text-white animate-spin" />
                 : <Send size={14} className="text-white" />}
             </button>
+          </div>
           </div>
         </div>
       </div>

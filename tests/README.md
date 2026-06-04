@@ -10,7 +10,8 @@ tests/
   test_unit_bm25.py            BM25 algorithm, tokenizer, node-to-text (no services needed)
   test_unit_routing.py         route_query, _try_direct_answer, cost budget enforcement (no services needed)
   test_unit_safety.py          input injection defence (5 families) + output PII scanning (SSN, card, routing, email)
-  test_integration_graph.py    graph.py functions against live Neo4j + seed data integrity
+  test_unit_doc_to_graph.py    doc_to_graph EXTRACTION_TOOL schema + label/rel-type sync with graph (no services needed)
+  test_integration_graph.py    graph.py functions + doc_to_graph load/extract against live Neo4j + seed data integrity
   test_integration_api.py      all REST endpoints, SSE streams, CRUD operations
 ```
 
@@ -34,7 +35,7 @@ Integration and API tests also require:
 ### Unit tests only — no external services needed
 
 ```bash
-python3 -m pytest tests/test_unit_bm25.py tests/test_unit_routing.py tests/test_unit_safety.py -v
+python3 -m pytest tests/test_unit_bm25.py tests/test_unit_routing.py tests/test_unit_safety.py tests/test_unit_doc_to_graph.py -v
 ```
 
 ### All tests except LLM calls — fast, ~1 s
@@ -94,7 +95,7 @@ These tests run automatically in GitHub Actions on every push and pull request v
 
 ```
 Job: syntax-and-unit
-  └── python3 -m pytest tests/test_unit_bm25.py tests/test_unit_routing.py tests/test_unit_safety.py
+  └── python3 -m pytest tests/test_unit_bm25.py tests/test_unit_routing.py tests/test_unit_safety.py tests/test_unit_doc_to_graph.py
       No external services. Runs in ~0.5 s.
 
 Job: prompt-validation
@@ -181,7 +182,7 @@ Verifies `graph.py` functions against the live Meridian Property Group dataset:
 - `get_node` / `get_node_with_connections` — known entities, connection fields, direction values
 - `get_full_graph` — full node and relationship counts
 - `search_nodes` — name match, case insensitivity, label filter
-- `hybrid_search_nodes` — BM25 ranking quality, label filter, fallback
+- `hybrid_search_nodes` — BM25 + semantic (RRF) ranking quality, label filter, BM25-only and substring fallbacks
 - `find_shortest_path` — direct and multi-hop paths, no-path case
 - `create_node` / `delete_node` / `create_relationship` — full CRUD lifecycle
 - `TestSeedDataIntegrity` — 10 assertions verifying the PropTech dataset is correctly wired (ownerships, dependencies, AFFECTS relationships, product statuses)
@@ -201,7 +202,7 @@ Verifies every REST endpoint via HTTP:
 | `TestCreateNode` | `POST /nodes` | 201, retrievable, missing name → 422, all labels |
 | `TestDeleteNode` | `DELETE /nodes/{id}` | 200, id in response, gone after, 404 |
 | `TestCreateRelationship` | `POST /relationships` | 201, visible in connections, invalid ids → 404 |
-| `TestSearch` | `GET /search` | hybrid ranking, keyword mode, type filter, no results |
+| `TestSearch` | `GET /search` | hybrid ranking (BM25 + semantic, RRF), keyword mode, type filter, no results |
 | `TestPath` | `GET /path` | direct, multi-hop, no path → 404 |
 | `TestImpact` | `GET /impact/{id}` | source + reachable, hops field, 404 |
 | `TestQueryDirect` | `POST /query` | direct route (no LLM), latency < 1 s, SSE events |

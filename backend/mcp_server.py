@@ -111,7 +111,7 @@ def search_graph(keyword: str, entity_type: str = "") -> str:
         return f"No results for '{keyword}'" + (f" in {entity_type}" if label else "") + "."
     lines = [f"Found {len(results)} result(s) for '{keyword}':"]
     for n in results:
-        lines.append(f"  [{n['id']}] {n.get('name')} ({', '.join(n.get('_labels', []))}) — {_fmt({k: v for k, v in n.items() if k not in ('_labels',)})}")
+        lines.append(f"  [{n['id']}] {n.get('name')} ({', '.join(n.get('_labels', []))}) — {_fmt({k: v for k, v in n.items() if k not in ('_labels', '_match')})}")
     return "\n".join(lines)
 
 

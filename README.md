@@ -36,7 +36,7 @@ nexus_corp_brief.md          (source: internal company document)
   Neo4j (graph.py layer)      ← same driver used by REST API + MCP server
         │
         ▼
-  30 nodes · 73 relationships ← queryable via UI, API, or Claude Desktop
+  30 nodes · 71 relationships ← queryable via UI, API, or Claude Desktop
 ```
 
 ### How it works
@@ -77,29 +77,30 @@ Most knowledge graph demos hand-craft seed data. This pipeline shows the realist
              ▼                           ▼
 ┌────────────────────────┐   ┌───────────────────────────────────┐
 │    React + Vite UI     │   │        Claude Desktop / Code      │
-│  (TypeScript, port 5174)│   │         MCP Client                │
-│                        │   └───────────────┬───────────────────┘
-│  ┌──────────────────┐  │                   │ MCP protocol
-│  │  Force-directed  │  │                   │ (stdio)
-│  │  Graph Canvas    │  │   ┌───────────────▼───────────────────┐
-│  │  (react-force-   │  │   │         mcp_server.py             │
-│  │   graph-2d)      │  │   │       (FastMCP / Python)          │
-│  ├──────────────────┤  │   └───────────────┬───────────────────┘
-│  │  Query Chat UI   │  │                   │
-│  │  (SSE streaming) │  │                   │
+│   (TypeScript, :5173)  │   │            MCP Client             │
+│  Graph · Query · Observe│  └───────────────┬───────────────────┘
+│  ┌──────────────────┐  │                   │ MCP protocol (stdio)
+│  │ Force-graph canvas│  │  ┌───────────────▼───────────────────┐
+│  │ Query chat (SSE)  │  │  │      mcp_server.py (FastMCP)      │
+│  │  Std│Agent│Multi  │  │  │      11 tools ──► graph.py        │
+│  │ Observe metrics   │  │  └───────────────┬───────────────────┘
 └──────────┬───────────┘                     │
            │ /api proxy                       │
            ▼                                 ▼
 ┌─────────────────────────────────────────────────────────────────┐
-│                      FastAPI  (port 8000)                       │
-│                          api.py                                 │
+│                    FastAPI  (api.py, :8000)                     │
 │                                                                 │
-│   GET  /graph          GET  /nodes/{id}     GET  /search        │
-│   GET  /impact/{id}    POST /nodes          POST /query  ──────►│
-│   POST /relationships  DELETE /nodes/{id}   GET  /path          │
-│                                                    │            │
-│                                             Anthropic SDK       │
-│                                          (Claude Sonnet, SSE)   │
+│  Graph/CRUD : GET /graph · /nodes · /impact · /path · /metrics  │
+│  Search     : GET /search  ──►  hybrid: BM25 + semantic (RRF)   │
+│  LLM modes (SSE):                                               │
+│    POST /query             routed + full-graph cached prompt    │
+│    POST /query/agent       single-agent tool-calling loop       │
+│    POST /query/orchestrate planner → ‖workers‖ → synthesizer    │
+│                                  │                              │
+│   route_query (direct/Haiku/Sonnet) · injection + PII guards    │
+│                                  ▼                              │
+│   Anthropic SDK (Haiku/Sonnet) · prompt caching · LangSmith     │
+│   local embeddings (sentence-transformers, hybrid search arm)   │
 └──────────────────────────┬──────────────────────────────────────┘
                            │  Python neo4j driver  (bolt://7687)
                            ▼
@@ -107,11 +108,11 @@ Most knowledge graph demos hand-craft seed data. This pipeline shows the realist
 │                     Neo4j 5.x  (Docker)                         │
 │                                                                 │
 │   (:Person)  ──[:WORKS_ON]──►  (:Product)                       │
-│   (:Product) ──[:USED_BY]───►  (:Customer)                      │
-│   (:Decision)──[:AFFECTS]───►  (:Workflow | :Product)           │
+│   (:Customer)──[:USES]──────►  (:Product)                       │
+│   (:Decision)──[:AFFECTS]───►  (:Workflow | :Product | :Customer)│
 │   (:Person)  ──[:OWNS]──────►  (:Workflow)                      │
 │                                                                 │
-│   30 nodes · 73 relationships                                   │
+│   30 nodes · 71 relationships                                   │
 └─────────────────────────────────────────────────────────────────┘
 ```
 
@@ -125,6 +126,9 @@ Most knowledge graph demos hand-craft seed data. This pipeline shows the realist
 | API layer | FastAPI — async, auto-docs, thin wrapper around `graph.py` |
 | LLM integration | Full graph serialized into a **cached system prompt** — no RAG chunking needed at this scale |
 | Streaming | SSE (`StreamingResponse`) so the UI renders tokens as they arrive |
+| Search | Hybrid — BM25 (lexical) + local `sentence-transformers` embeddings (semantic), fused with RRF |
+| Query modes | Routed single-turn (`/query`), single-agent tool loop (`/query/agent`), multi-agent orchestration (`/query/orchestrate`) |
+| Multi-agent | Planner → parallel workers → synthesizer over the native SDK; per-role model routing (Sonnet planner/synth, Haiku workers) |
 | Frontend proxy | Vite `/api` → `localhost:8000` — no CORS config required in dev |
 | MCP | Same `graph.py` functions reused — one source of truth for all clients |
 
@@ -132,9 +136,15 @@ Most knowledge graph demos hand-craft seed data. This pipeline shows the realist
 
 ![Query Flow Diagram](query_flow.png)
 
-How a natural language question travels through the system when a user types in the Query tab.
+How a natural language question travels through the system when a user types in the Query tab. The Query tab offers three modes — the **standard** routed flow is detailed below; the **multi-agent** flow follows in its own diagram.
 
-### Step-by-step
+| Mode | Endpoint | Shape |
+|------|----------|-------|
+| Standard | `POST /query` | route → full-graph cached prompt → stream (or direct no-LLM for list/count) |
+| Single-agent | `POST /query/agent` | one agent iteratively calls graph tools until done |
+| Multi-agent | `POST /query/orchestrate` | planner → parallel workers → synthesizer |
+
+### Step-by-step (standard `/query`)
 
 **1. User input → Frontend** (`UI/src/components/QueryPage.tsx`)
 
@@ -231,6 +241,39 @@ FastAPI  POST /query
         setMessages(prev → append token)  →  re-render per token
 ```
 
+### Multi-agent flow (`POST /query/orchestrate`)
+
+When the Query tab is in **Multi-agent** mode, the question fans out across sub-agents instead of a single LLM call. The standard flow above is unchanged; this path is purely additive.
+
+```
+QueryPage.tsx  (Multi-agent toggle)
+    │  POST /api/query/orchestrate  { question }
+    ▼
+FastAPI  POST /query/orchestrate          (injection guard runs first)
+    │
+    ├─► [1] Planner · Sonnet
+    │        forced submit_plan tool ──► N independent sub-questions
+    │        SSE:  { "type":"plan", "subtasks":[ s1, s2, s3 ] }
+    │
+    ├─► [2] Workers · Haiku × N        ‖ run IN PARALLEL (asyncio.as_completed) ‖
+    │        each = bounded tool-calling loop over AGENT_TOOLS → graph.py → Neo4j
+    │        SSE per worker:  subagent_start → … → subagent_result  (finish out of order)
+    │
+    └─► [3] Synthesizer · Sonnet   (streamed)
+             merges findings (grounded only in worker answers) → PII scan
+             SSE:  synthesis → text … → done
+                    │
+                    ▼
+             done: { subtasks, tool_calls, latency_ms,
+                     models:{ planner, worker, synthesizer } }
+                    │
+                    ▼
+        UI renders: live fan-out panel (plan + per-worker status/tool count)
+                    + per-role model badges  (planner Sonnet · N× worker Haiku · synth Sonnet)
+```
+
+All three roles reuse the same `graph.py` tools, prompt-injection filter, PII output scan, and LangSmith tracing as the single-agent path — **per-role model routing** (capable Sonnet for planning/synthesis, cheap Haiku for parallel workers) is the cost lever.
+
 ### Latency breakdown
 
 | Phase | Typical time |
@@ -246,6 +289,8 @@ FastAPI  POST /query
 ### Agentic Query Mode (`POST /query/agent`)
 
 Beyond the standard single-turn query, `/query/agent` runs a full **tool-calling agent loop**. Claude iteratively decides which graph tools to invoke, executes them, and reasons across results before producing a final answer — demonstrating the responder/thinker pattern described in modern agentic AI design.
+
+![Single-Agent Harness](docs/agent_harness_single.png)
 
 ```
 User question
@@ -270,6 +315,42 @@ Five tools are available to the agent: `search_graph`, `get_entity`, `find_path`
 
 ---
 
+### Multi-Agent Orchestration (`POST /query/orchestrate`)
+
+For broad, comparative questions, `/query/orchestrate` runs a **multi-agent** pattern — an orchestrator that decomposes the question, parallel workers that research each part, and a synthesizer that merges the findings. It's purely additive; `/query` and `/query/agent` are unchanged.
+
+![Multi-Agent Harness](docs/agent_harness_multi.png)
+
+> **No agent framework.** No LangGraph, CrewAI, AutoGen, or LangChain agents — the orchestration is plain Python on the Anthropic SDK (`messages.create` / `messages.stream`), with stdlib `asyncio.as_completed` for the parallel worker fan-out. Same rationale as the single-agent loop: full control and traceability over every turn, custom SSE events, and per-role model routing — none of which a framework abstraction makes easier here.
+
+```
+User question
+    │
+    ▼
+[Planner · Sonnet]  ──►  decomposes into N independent sub-questions (forced submit_plan tool)
+    │
+    ├─►  [Worker s1 · Haiku] ─┐   each worker is a bounded tool-calling loop
+    ├─►  [Worker s2 · Haiku] ─┤   over the same AGENT_TOOLS, run in PARALLEL
+    └─►  [Worker s3 · Haiku] ─┘   (asyncio.as_completed)
+    │
+    ▼
+[Synthesizer · Sonnet]  ──►  one grounded answer, streamed
+```
+
+**Per-role model routing is the cost lever:** the planner and synthesizer use the capable model (Sonnet) where reasoning matters; the parallel workers use the cheap model (Haiku). All roles reuse the same `graph.py` tools, prompt-injection filter, and PII output scan. SSE events extend the agent set:
+
+| Event type | What it carries |
+|------------|----------------|
+| `plan` | The decomposed sub-questions + planner model |
+| `subagent_start` | A worker began (id, question, model) |
+| `subagent_result` | A worker finished (id, answer preview, tool calls) |
+| `synthesis` | The synthesizer started (model) |
+| `text` / `done` | Final answer tokens / sub-agent + tool counts, latency, per-role models |
+
+Models are env-overridable (`ORCH_PLANNER_MODEL`, `ORCH_WORKER_MODEL`, `ORCH_SYNTH_MODEL`, `ORCH_MAX_SUBTASKS`). In the UI, the **Query tab → Multi-agent toggle** shows the fan-out live: the plan, each sub-agent's status and tool count, then the synthesis.
+
+---
+
 ### Model Routing
 
 Every query is classified before an LLM is called:
@@ -290,19 +371,21 @@ route_query("trace the impact of the GDPR compliance decision on workflows")
 
 ---
 
-### Hybrid BM25 Search
+### Hybrid Search (BM25 + Semantic)
 
-All search operations — `/search`, the standard `/query` endpoint, and the agent's `search_graph` tool — use **BM25 lexical ranking** instead of simple substring matching.
+All search operations — `/search`, the standard `/query` endpoint, and the agent's `search_graph` tool — use a **true hybrid retriever**: a BM25 lexical arm and a semantic embedding arm, fused with Reciprocal Rank Fusion (RRF).
 
-BM25 weighs terms by inverse document frequency and normalizes for document length, so a search for "compliance audit" ranks `Fair Housing Audit` above nodes that only contain one of the two words. The implementation is pure Python (no extra dependencies):
+- **Lexical arm (BM25):** weighs terms by inverse document frequency and normalizes for document length, so "compliance audit" ranks `Fair Housing Audit` above nodes containing only one of the two words. Pure Python.
+- **Semantic arm:** embeds the query and every node with a local `sentence-transformers` model (`all-MiniLM-L6-v2`, 384-dim) and ranks by cosine similarity — so "protecting user information" surfaces the `GDPR and CCPA Compliance Overhaul` decision even though it shares no words with the query.
+- **Fusion (RRF):** the two ranked lists are merged by `1/(k+rank)` (k=60), which is score-scale agnostic and lets lexical-only and semantic-only hits both survive.
 
 ```python
 hybrid_search_nodes("lease renewal compliance")
-# Scores every node's name + description + role + rationale against the query
-# Returns ranked results with IDF-weighted term frequency scoring
+# Lexical BM25 ranking + semantic cosine ranking, fused via RRF
+# Embeds name + description + role + rationale; returns ranked results
 ```
 
-A `/search?mode=keyword` fallback is available for direct substring matching.
+The semantic arm degrades gracefully — if `sentence-transformers` is not installed the retriever falls back to pure BM25. A `/search?mode=keyword` fallback is also available for direct substring matching.
 
 ---
 
@@ -546,7 +629,7 @@ python eval.py --verbose       # print full answer for each case
 | Graph viz | react-force-graph-2d (D3 canvas) |
 | MCP Server | `mcp` Python SDK (FastMCP) |
 | Graph data | Extracted from `nexus_corp_brief.md` via `doc_to_graph.py` + Claude |
-| Search | BM25 lexical ranking (pure Python, no extra deps) |
+| Search | Hybrid: BM25 (pure Python) + local `sentence-transformers` embeddings, fused via RRF |
 | Tracing | LangSmith (`wrap_anthropic` + `@traceable`) |
 | CI/CD | GitHub Actions — push gate + nightly eval with regression alerting |
 | Observability UI | Observe tab — model routing distribution, LangSmith trace feed, budget status |
@@ -560,6 +643,8 @@ cd /Users/syefai/workspace/CompanyGraph
 python -m venv .venv && source .venv/bin/activate
 pip install -r requirements.txt
 ```
+
+> The first search downloads the local embedding model (`all-MiniLM-L6-v2`, ~90 MB) for the semantic arm. It's cached afterwards; if `sentence-transformers` is unavailable the search falls back to pure BM25.
 
 ### 2. Start Neo4j
 
@@ -599,12 +684,17 @@ curl -N -X POST http://localhost:8000/query \
   -H "Content-Type: application/json" \
   -d '{"question": "Who owns the Lease Renewal workflow?"}'
 
-# Agentic query (tool-calling loop, streams tool_call/tool_result/text events)
+# Agentic query (single-agent tool-calling loop, streams tool_call/tool_result/text events)
 curl -N -X POST http://localhost:8000/query/agent \
   -H "Content-Type: application/json" \
   -d '{"question": "Trace the compliance impact of the GDPR overhaul decision."}'
 
-# Hybrid BM25 search
+# Multi-agent query (planner → parallel workers → synthesizer; streams plan/subagent_result/text)
+curl -N -X POST http://localhost:8000/query/orchestrate \
+  -H "Content-Type: application/json" \
+  -d '{"question": "What is Meridian'\''s compliance posture, and which customers and products are most affected by the GDPR decision?"}'
+
+# Hybrid search (BM25 + semantic embeddings via RRF)
 curl "http://localhost:8000/search?q=fair+housing+compliance"
 
 # Observability snapshot
@@ -640,7 +730,39 @@ Results are saved to `backend/eval_results/`.
 
 ### 8. Use the MCP server with Claude Code
 
-The `.mcp.json` file in this directory auto-registers the MCP server when you open Claude Code here. Claude will have access to these tools:
+The `.mcp.json` file in this directory auto-registers the MCP server when you open Claude Code here — no manual step needed. Its contents:
+
+```json
+{
+  "mcpServers": {
+    "meridian-property-graph": {
+      "command": "/Users/syefai/workspace/CompanyGraph/.venv/bin/python",
+      "args": ["backend/mcp_server.py"],
+      "cwd": "/Users/syefai/workspace/CompanyGraph",
+      "env": {
+        "NEO4J_URI": "bolt://localhost:7687",
+        "NEO4J_USER": "neo4j",
+        "NEO4J_PASSWORD": "companygraph123"
+      }
+    }
+  }
+}
+```
+
+Why each field matters:
+- **`command`** points at the **venv** Python (not bare `python`), so the server has the project's dependencies (`neo4j`, `mcp`, …).
+- **`args`** is `backend/mcp_server.py` — the server lives in `backend/`, not the repo root.
+- **`cwd`** anchors it to the repo root so `mcp_server.py`'s flat `import graph` resolves and `.env` is found.
+- **`env`** supplies the Neo4j connection (no `ANTHROPIC_API_KEY` needed — the MCP tools only touch the graph, no LLM calls).
+
+Or register it from the CLI without editing the file:
+```bash
+claude mcp add meridian-property-graph \
+  -- /Users/syefai/workspace/CompanyGraph/.venv/bin/python \
+     /Users/syefai/workspace/CompanyGraph/backend/mcp_server.py
+```
+
+Either way, Claude gets these 11 tools (8 read + 3 write):
 
 | Tool | What it does |
 |------|-------------|
@@ -658,14 +780,16 @@ The `.mcp.json` file in this directory auto-registers the MCP server when you op
 
 ### 9. Claude Desktop config (optional)
 
-Add to `~/Library/Application Support/Claude/claude_desktop_config.json`:
+Claude Desktop launches the server from an arbitrary working directory, so use
+**absolute paths** for both the interpreter and the script. Add to
+`~/Library/Application Support/Claude/claude_desktop_config.json`:
 
 ```json
 {
   "mcpServers": {
-    "company-graph": {
-      "command": "python",
-      "args": ["/Users/syefai/workspace/CompanyGraph/mcp_server.py"],
+    "meridian-property-graph": {
+      "command": "/Users/syefai/workspace/CompanyGraph/.venv/bin/python",
+      "args": ["/Users/syefai/workspace/CompanyGraph/backend/mcp_server.py"],
       "env": {
         "NEO4J_URI": "bolt://localhost:7687",
         "NEO4J_USER": "neo4j",
@@ -675,6 +799,20 @@ Add to `~/Library/Application Support/Claude/claude_desktop_config.json`:
   }
 }
 ```
+
+> The absolute path to `backend/mcp_server.py` puts `backend/` on `sys.path`, so the
+> flat `import graph` resolves without a `cwd`. After saving, fully restart Claude
+> Desktop and confirm the tools icon lists **meridian-property-graph** with its 11 tools.
+> Neo4j must be running (`docker compose up -d`) for the tools to return data.
+
+> ⚠️ **Gotcha — don't copy the relative path from `.mcp.json`.** Claude Desktop
+> **ignores the `cwd` field** and launches the server from `/`, so a relative
+> `"args": ["backend/mcp_server.py"]` resolves against root and fails with:
+> ```
+> can't open file '//backend/mcp_server.py': [Errno 2] No such file or directory
+> ```
+> The `//` prefix is the tell. Use the **absolute** script path in `args` (as above)
+> for Desktop. The relative path + `cwd` only works in `.mcp.json` for Claude **Code**.
 
 ## Graph schema
 

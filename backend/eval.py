@@ -27,6 +27,12 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 import httpx
+from dotenv import load_dotenv
+
+# eval.py runs as its own process (HTTP client to the API), so it must load
+# .env itself — unlike graph.py/api.py, nothing else loads it here. Point at
+# the repo-root .env explicitly so it works from any working directory.
+load_dotenv(Path(__file__).resolve().parent.parent / ".env")
 
 # ── Test suite ────────────────────────────────────────────────────────────────
 

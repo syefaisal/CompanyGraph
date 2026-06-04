@@ -24,6 +24,7 @@ def _neo4j_up() -> bool:
 _NEO4J_AVAILABLE = _neo4j_up()
 
 import graph as g
+import embeddings
 
 pytestmark = [
     pytest.mark.integration,
@@ -254,6 +255,21 @@ class TestHybridSearchNodes:
         names = [r["name"] for r in results]
         assert any("Vendor" in n or "Outsource" in n for n in names)
 
+    def test_semantic_arm_matches_paraphrase(self):
+        # "data privacy rules" shares no literal token with the GDPR decision;
+        # only the semantic arm can surface it. Skips if embeddings unavailable.
+        if not embeddings.is_available():
+            import pytest
+            pytest.skip("sentence-transformers not installed")
+        results = g.hybrid_search_nodes("data privacy rules")
+        names = [r["name"] for r in results]
+        assert any("GDPR" in n for n in names)
+
+    def test_nonsense_query_returns_nothing(self):
+        # Below the semantic cosine floor and no lexical match -> empty.
+        results = g.hybrid_search_nodes("zzznosuchthing999")
+        assert results == []
+
 
 # ── find_shortest_path ────────────────────────────────────────────────────────
 
@@ -421,3 +437,96 @@ class TestSeedDataIntegrity:
     def test_apex_commercial_is_enterprise(self):
         node = g.get_node("c5")
         assert node["tier"] == "enterprise"
+
+
+# ── doc_to_graph.load_into_neo4j ──────────────────────────────────────────────
+# Uses throwaway IDs (prefix 'test_doc2graph_') and deletes them in finally,
+# so the seeded Meridian graph is never disturbed. NEVER pass clear=True here.
+
+_TEST_PREFIX = "test_doc2graph_"
+
+
+def _cleanup_test_nodes():
+    g.run(f"MATCH (n) WHERE n.id STARTS WITH '{_TEST_PREFIX}' DETACH DELETE n")
+
+
+class TestDocToGraphLoad:
+    def test_load_creates_nodes_and_relationship(self):
+        from doc_to_graph import load_into_neo4j
+        graph_data = {
+            "entities": [
+                {"id": f"{_TEST_PREFIX}p1", "label": "Person",
+                 "name": "Test Person", "properties": {"role": "Tester"}},
+                {"id": f"{_TEST_PREFIX}pr1", "label": "Product",
+                 "name": "Test Product", "properties": {}},
+            ],
+            "relationships": [
+                {"from_id": f"{_TEST_PREFIX}p1", "rel_type": "WORKS_ON", "to_id": f"{_TEST_PREFIX}pr1"},
+            ],
+        }
+        try:
+            load_into_neo4j(graph_data, clear=False)
+
+            person = g.get_node(f"{_TEST_PREFIX}p1")
+            assert person is not None
+            assert person["name"] == "Test Person"
+            assert person["role"] == "Tester"           # nested properties merged
+            assert person["label"] == "Person"
+
+            product = g.get_node(f"{_TEST_PREFIX}pr1")
+            assert product is not None and product["label"] == "Product"
+
+            rows = g.run(
+                f"MATCH (a {{id:$a}})-[r:WORKS_ON]->(b {{id:$b}}) RETURN count(r) AS c",
+                {"a": f"{_TEST_PREFIX}p1", "b": f"{_TEST_PREFIX}pr1"},
+            )
+            assert rows[0]["c"] == 1
+        finally:
+            _cleanup_test_nodes()
+
+    def test_load_is_idempotent_via_merge(self):
+        # Loading the same data twice must not duplicate nodes (MERGE on id).
+        from doc_to_graph import load_into_neo4j
+        graph_data = {
+            "entities": [
+                {"id": f"{_TEST_PREFIX}wf", "label": "Workflow",
+                 "name": "Idem Workflow", "properties": {}},
+            ],
+            "relationships": [],
+        }
+        try:
+            load_into_neo4j(graph_data, clear=False)
+            load_into_neo4j(graph_data, clear=False)
+            rows = g.run(f"MATCH (n {{id:'{_TEST_PREFIX}wf'}}) RETURN count(n) AS c")
+            assert rows[0]["c"] == 1
+        finally:
+            _cleanup_test_nodes()
+
+
+# ── doc_to_graph.extract_graph (LLM) ──────────────────────────────────────────
+
+@pytest.mark.llm
+class TestExtractGraphLLM:
+    """Calls Claude to extract a graph from prose. Skip with: pytest -m 'not llm'.
+    Uses a current cheap model (Haiku) rather than the module default."""
+
+    def test_extracts_valid_graph_from_prose(self):
+        from doc_to_graph import extract_graph
+        doc = (
+            "Acme Corp is a property management SaaS company. "
+            "Jane Doe is the CEO. Acme builds a product called PayFlow for rent collection. "
+            "Jane made the decision to launch PayFlow in 2025, which affects PayFlow."
+        )
+        result = extract_graph(doc, model="claude-haiku-4-5-20251001")
+
+        assert "entities" in result and "relationships" in result
+        assert len(result["entities"]) >= 2
+
+        valid_labels = {"Person", "Product", "Customer", "Workflow", "Decision"}
+        for e in result["entities"]:
+            assert e["label"] in valid_labels
+            assert e.get("id") and e.get("name")
+
+        valid_rels = {"WORKS_ON", "OWNS", "MADE", "INVOLVES", "USES", "AFFECTS", "DEPENDS_ON", "PRODUCES"}
+        for r in result["relationships"]:
+            assert r["rel_type"] in valid_rels

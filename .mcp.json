@@ -1,6 +1,6 @@
 {
   "mcpServers": {
-    "company-graph": {
+    "meridian-property-graph": {
       "command": "/Users/syefai/workspace/CompanyGraph/.venv/bin/python",
       "args": ["backend/mcp_server.py"],
       "cwd": "/Users/syefai/workspace/CompanyGraph",

@@ -79,7 +79,9 @@ export const api = {
     rel_type: string,
     properties: Record<string, unknown> = {}
   ) => post('/relationships', { from_id, to_id, rel_type, properties }),
-  search: (q: string, type?: NodeLabel) =>
-    get<GraphNode[]>(`/search?q=${encodeURIComponent(q)}${type ? `&type=${type}` : ''}`),
+  search: (q: string, mode: 'hybrid' | 'keyword' = 'hybrid', type?: NodeLabel) =>
+    get<GraphNode[]>(
+      `/search?q=${encodeURIComponent(q)}&mode=${mode}${type ? `&type=${type}` : ''}`
+    ),
   impact: (id: string) => get<ImpactResult>(`/impact/${id}`),
 }
