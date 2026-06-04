@@ -304,8 +304,9 @@ def _execute_agent_tool(name: str, inputs: dict) -> str:
         try:
             rows = g.run(inputs["query"])
             return json.dumps(rows[:50], default=str)
-        except Exception as exc:
-            return f"Cypher error: {exc}"
+        except Exception:
+            app.logger.exception("Cypher execution failed in agent tool")
+            return "Cypher error: query execution failed."
     return f"Unknown tool: {name}"
 
 
@@ -724,9 +725,10 @@ async def query_graph_agent(body: QueryRequest):
                     tools=AGENT_TOOLS,
                     messages=messages,
                 )
-            except Exception as exc:
+            except Exception:
                 _metrics["errors"] += 1
-                yield f"data: {json.dumps({'type': 'error', 'content': str(exc)})}\n\n"
+                app.logger.exception("Agent streaming call failed")
+                yield f"data: {json.dumps({'type': 'error', 'content': 'Internal error while processing request.'})}\n\n"
                 return
 
             total_input_tokens += getattr(response.usage, "input_tokens", 0)
