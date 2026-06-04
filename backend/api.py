@@ -408,7 +408,8 @@ def get_langsmith_runs(limit: int = Query(10, ge=1, le=50)):
             })
         return {"enabled": True, "project": project, "runs": runs}
     except Exception as exc:
-        return {"enabled": True, "error": str(exc), "runs": []}
+        _logging.exception("Failed to fetch LangSmith runs.")
+        return {"enabled": True, "error": "Unable to fetch runs at this time.", "runs": []}
 
 
 @app.post("/admin/reset-budget")
