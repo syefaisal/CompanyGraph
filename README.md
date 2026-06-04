@@ -4,6 +4,36 @@ A Neo4j knowledge graph connecting **People → Products → Customers → Workf
 
 Themed around **Meridian Property Group** — a PropTech SaaS company for residential and commercial property management — to demonstrate AI architecture patterns relevant to the property technology domain: lease management, maintenance workflows, fair housing compliance, and owner analytics.
 
+### Query routing at a glance — model selection
+
+Every question is classified before an LLM is called: list/count queries are answered straight from Neo4j (no LLM), simple lookups go to **Haiku**, and multi-hop reasoning goes to **Sonnet** — with a daily-budget cap that forces Haiku.
+
+```mermaid
+flowchart TD
+    Q["User question<br/>POST /query"] --> SAFE{"Prompt-injection<br/>guard"}
+    SAFE -- blocked --> R400["HTTP 400 — rejected"]
+    SAFE -- ok --> DIRECT{"List / count query?<br/>(_try_direct_answer)"}
+
+    DIRECT -- yes --> D["DIRECT — no LLM<br/>answered from Neo4j<br/>~10 ms · $0"]
+
+    DIRECT -- no --> ROUTE{"route_query"}
+    ROUTE -- "daily budget exceeded" --> H
+    ROUTE -- "complexity keyword<br/>or &gt; 12 words" --> S["SONNET<br/>multi-hop reasoning"]
+    ROUTE -- "otherwise" --> H["HAIKU<br/>simple lookup · fast &amp; cheap"]
+
+    S --> CTX["Full graph in<br/>cached system prompt"]
+    H --> CTX
+    CTX --> ANS["Stream answer (SSE)"]
+    D --> ANS["Stream answer (SSE)"]
+
+    classDef direct fill:#d1fae5,stroke:#059669,color:#064e3b
+    classDef haiku fill:#e0f2fe,stroke:#0284c7,color:#075985
+    classDef sonnet fill:#ede9fe,stroke:#7c3aed,color:#4c1d95
+    class D direct
+    class H haiku
+    class S sonnet
+```
+
 ## Repository Layout
 
 ```
@@ -64,10 +94,62 @@ Most knowledge graph demos hand-craft seed data. This pipeline shows the realist
 
 ## Architecture
 
-![Architecture Diagram](architecture.png)
+```mermaid
+flowchart TB
+    UI["React + Vite UI<br/>Graph · Query · Observe"]:::client
+    MCPC["Claude Desktop / Code<br/>MCP client"]:::client
+
+    subgraph backend["Backend (Python)"]
+        API["FastAPI · api.py<br/>REST + SSE endpoints<br/>routing · safety · metrics · agent loops"]:::svc
+        MCP["MCP server · mcp_server.py<br/>FastMCP — 11 tools"]:::svc
+        UTIL["utils.py<br/>injection guard · PII scan · prompt load"]:::svc
+    end
+
+    subgraph datalayer["Data layer — one source of truth"]
+        GRAPH["graph.py<br/>Cypher · hybrid search (BM25 + RRF)"]:::data
+        EMB["embeddings.py<br/>sentence-transformers"]:::data
+        NEO[("Neo4j<br/>Docker")]:::db
+    end
+
+    ANTH["Anthropic API<br/>Claude Haiku / Sonnet"]:::ext
+    LS["LangSmith<br/>tracing"]:::ext
+
+    subgraph ingest["Ingestion"]
+        DOC["doc_to_graph.py<br/>LLM extraction"]:::ingest
+    end
+
+    subgraph opsg["Ops"]
+        EVAL["eval.py<br/>offline eval harness"]:::ops
+        PROMPTS["prompts/*.yaml<br/>versioned prompts"]:::ops
+    end
+
+    UI -->|/api proxy| API
+    MCPC -->|stdio| MCP
+    API --> UTIL
+    API --> GRAPH
+    MCP --> GRAPH
+    GRAPH --> NEO
+    GRAPH --> EMB
+    API -->|LLM calls| ANTH
+    API -.->|traces| LS
+    DOC -->|extract| ANTH
+    DOC --> GRAPH
+    EVAL -->|HTTP| API
+    PROMPTS -.->|config| API
+
+    classDef client fill:#f1f5f9,stroke:#475569,color:#0f172a
+    classDef svc fill:#eef2ff,stroke:#6366f1,color:#312e81
+    classDef data fill:#ccfbf1,stroke:#0f766e,color:#134e4a
+    classDef db fill:#cffafe,stroke:#0e7490,color:#164e63
+    classDef ext fill:#fef3c7,stroke:#d97706,color:#78350f
+    classDef ingest fill:#dcfce7,stroke:#16a34a,color:#14532d
+    classDef ops fill:#f3e8ff,stroke:#9333ea,color:#581c87
+```
 
 <details>
-<summary>ASCII version</summary>
+<summary>Static image / ASCII versions</summary>
+
+![Architecture Diagram](architecture.png)
 
 ```
 ┌─────────────────────────────────────────────────────────────────┐
@@ -360,6 +442,8 @@ Every query is classified before an LLM is called:
 | **Direct** (no LLM) | List / count queries (`how many workflows`, `list all products`) | ~0 ms, $0 |
 | **Claude Haiku** | Simple single-entity lookups (≤12 words, no multi-hop indicators) | Fast, cheap |
 | **Claude Sonnet** | Complex reasoning: `impact`, `trace`, `depend`, `compliance`, `path`, etc. | Full quality |
+
+![Query Routing — Model Selection](docs/model_routing.png)
 
 ```python
 route_query("who owns the lease renewal workflow")
