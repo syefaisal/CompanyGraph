@@ -1011,7 +1011,8 @@ async def query_graph_orchestrate(body: QueryRequest):
             yield f"data: {json.dumps({'type': 'done', 'model': f'multi-agent · {len(plan)} sub-agents', 'route_reason': f'{len(plan)} parallel sub-agents', 'subtasks': len(plan), 'tool_calls': sum(r['tool_calls'] for r in results), 'latency_ms': round(latency), 'models': {'planner': ORCH_PLANNER_MODEL, 'worker': ORCH_WORKER_MODEL, 'synthesizer': ORCH_SYNTH_MODEL}})}\n\n"
         except Exception as exc:
             _metrics["errors"] += 1
-            yield f"data: {json.dumps({'type': 'error', 'content': str(exc)})}\n\n"
+            logger.exception("Unhandled error in query_graph_orchestrate stream")
+            yield f"data: {json.dumps({'type': 'error', 'content': 'An internal error has occurred.'})}\n\n"
 
     return StreamingResponse(
         orchestrate_stream(),
