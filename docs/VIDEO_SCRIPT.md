@@ -34,6 +34,8 @@
 >
 > Let me walk through it layer by layer."
 
+**WHY THIS DECISION:** The questions that matter here are *structural* — ownership, dependency, blast radius — not keyword matches. A knowledge graph makes relationships first-class, where chunk-based RAG and keyword search structurally cannot recover them. The whole platform is framed as agentic because answering across relationships requires *planning and tool use*, not a single retrieval-and-respond.
+
 **JD ALIGNMENT:** States the problem (knowledge locked in documents), the solution (Claude extracts a knowledge graph, queried in natural language), and the scenario (Meridian Property Group).
 
 ---
@@ -48,6 +50,8 @@
 > A single python script — `backend/doc_to_graph.py` — sends this document to LLM with a structured tool definition. `tool_choice: {type: 'tool'}` forces exactly one structured call that returns every entity and relationship. No free-form parsing. The output is validated directly against the Neo4j schema.
 >
 > This is the realistic ingestion path for any organisation: unstructured document → LLM extraction → graph database. The same pipeline works for org charts, engineering RFCs, or sales notes — a reusable ingestion framework. Let's look at the graph it produces."
+
+**WHY THIS DECISION:** Forcing a single structured tool call (`tool_choice`) constrains the model to a valid graph shape — no free-form text to regex-parse, no hallucinated structure. I chose extraction-by-tool-use over a brittle parser or manual data entry because it generalizes to *any* prose document while staying schema-safe.
 
 **JD ALIGNMENT:** *"Reusable RAG pipelines and ingestion frameworks; prompting, tool use, function calling."*
 
@@ -67,6 +71,8 @@
 > "The Fair Housing Audit workflow is owned by the Director of Compliance. The Lease Renewal workflow depends on it — every lease renewal must pass a fair housing check first. And the GDPR decision directly affects both LeaseTrack and TenantPay, the two products that handle the most tenant PII.
 >
 > None of this was hand-crafted. It was all extracted from that plain-text brief by Claude using the structured tool-calling pipeline I just showed — the domain model reflects real PropTech risk and compliance structure."
+
+**WHY THIS DECISION:** Neo4j over a relational or vector store because the relationships *are* the data — a three-hop "what does this decision affect" is one expressive Cypher traversal, versus recursive joins or embeddings that can't represent directed, typed edges. Typed labels and relationship types are what make path-finding and blast-radius analysis even possible.
 
 **JD ALIGNMENT:** *"Knowledge graphs; designing AI products in domains with strong regulatory or privacy constraints; PropTech domain needs."*
 
@@ -107,6 +113,8 @@
 >
 > This is model selection strategy made tangible: the system knows which tool to use, explains why, and shows the cost difference in real time."
 
+**WHY THIS DECISION:** Always-Sonnet is the lazy default and it's expensive; many queries don't need an LLM at all. Routing right-sizes cost per query — list/count answered straight from Neo4j, simple lookups to Haiku, reasoning to Sonnet — and surfacing the *reason* on screen makes the cost/capability trade-off auditable to a non-technical stakeholder.
+
 **JD ALIGNMENT:** *"Model selection strategy — small vs. large models; model routing, distillation, and caching strategies; right-sizing infrastructure; communicating AI concepts to non-technical partners."*
 
 ---
@@ -140,6 +148,8 @@
 
 > "This is the same trace data available in the LangSmith UI — but surfaced here for a stakeholder who doesn't have a LangSmith login. That's the kind of observability thinking that separates a production AI platform from a prototype."
 
+**WHY THIS DECISION:** Observability was built *into the app*, not left in an external dashboard, because a stakeholder shouldn't need a LangSmith login to understand cost and behavior. Prompt caching is framed honestly as a *cost* lever (not latency at this scale) — that precision is the senior tell — and the budget cap turns spend from a surprise into an enforced limit.
+
 **JD ALIGNMENT:** *"Observability, logging, and incident response for AI systems; semantic caching; model routing and cost management; SLAs/SLOs; communicating AI strategy to leadership and cross-functional teams."*
 
 ---
@@ -166,6 +176,8 @@ curl "http://localhost:8000/search?q=protecting+user+information&mode=hybrid"   
 > "Now watch this. 'Protecting user information' — none of those words appear in the GDPR decision. In Keyword mode, substring search returns nothing. Flip to Hybrid and the second arm kicks in: it embeds the query and every node with a local sentence-transformers model and ranks by cosine similarity — and the GDPR and CCPA Compliance Overhaul comes back first.
 >
 > See the badge on the result — 'semantic'. That's the embedding arm matching meaning, not words. When a result matches both arms it's tagged 'lexical' and 'semantic'. The two rankings are fused with Reciprocal Rank Fusion — sparse plus dense, lexical precision plus semantic recall — and it runs locally, no API key, no vector database to operate."
+
+**WHY THIS DECISION:** Keyword search misses meaning; pure-semantic search misses exact domain terms like "GDPR." Fusing both with Reciprocal Rank Fusion gets lexical precision *and* semantic recall, and RRF is score-scale-agnostic so I don't have to tune a blend weight. Embeddings run locally — no API key, no vector database — keeping the ops surface minimal at this scale.
 
 **JD ALIGNMENT:** *"RAG architectures, hybrid search, knowledge graphs; retrieval optimization techniques."*
 
@@ -220,6 +232,8 @@ What is Meridian's compliance posture, and which customers and products are most
 >
 > And to be clear: there's no agent framework here — no LangGraph, no CrewAI. The orchestration is plain Python on the Anthropic SDK, with `asyncio` for the parallel fan-out. That's deliberate — I own every turn, so I can stream custom events, attach traces precisely, and route each role to the right model. The pattern is simple enough to own outright."
 
+**WHY THIS DECISION:** I own the tool-calling loop on the native SDK instead of using LangGraph or CrewAI because owning every turn is what lets me stream custom typed events, attach traces precisely, and route each role to the right model — control a framework abstracts away. Multi-agent is *additive* and earns its cost only on broad, comparative questions; per-role routing (Sonnet to plan/synthesize, Haiku for parallel workers) is the discipline that keeps it affordable.
+
 **JD ALIGNMENT:** *"Multi-agent and workflow orchestration — planner/worker/synthesizer pattern with parallel sub-agents and per-role model routing; responder/thinker tool calling; real-time streaming; LLM-based application design — prompting, tool use, function calling."*
 
 ---
@@ -240,6 +254,8 @@ What is Meridian's compliance posture, and which customers and products are most
 **ON SCREEN:** In Claude Desktop, type a natural-language question, e.g. *"Using the Meridian graph, what's the blast radius if MaintenanceOS is deprecated?"* — Claude calls `search_graph` → `trace_decision_impact` / `get_entity` and answers.
 
 > "I ask in plain language, and Claude picks the tools itself — searches the graph, traces the impact, and synthesizes an answer grounded in real graph data, not its training set. Registering it is a few lines in the client's MCP config pointing at `mcp run mcp_server.py`. That's the interoperability story: build the capability once, and it's instantly usable by the whole ecosystem of MCP clients."
+
+**WHY THIS DECISION:** A capability shouldn't be locked behind one UI. Exposing the graph over MCP — an open standard — means any compatible client gets it with zero custom integration, and because the MCP tools reuse the exact same `graph.py` layer as the REST API and the agent, there's one source of truth behind three surfaces instead of three divergent implementations.
 
 **JD ALIGNMENT:** *"LLM-based application design — tool use, function calling; agentic frameworks and interoperability; modular reusable back-end design; standards-based integration."*
 
@@ -268,6 +284,8 @@ curl -s -X POST http://localhost:8000/query \
 >
 > This is what responsible AI looks like in a domain where the data is legally sensitive."
 
+**WHY THIS DECISION:** In a domain handling tenant PII and compliance records, no single safety layer is trustworthy — so it's defense in depth: block injection *before* spending a token, instruct the model at the prompt level, and scan/redact PII *before* output reaches the browser. Fail safe at every boundary, because the cost of one leak is regulatory, not cosmetic.
+
 **JD ALIGNMENT:** *"Content safety, bias and fairness considerations, PII handling; compliance with internal policies and external regulations — GDPR-like requirements; designing AI products in domains with strong regulatory or privacy constraints."*
 
 ---
@@ -292,6 +310,8 @@ python backend/eval.py
 >
 > There's also a CI regression check: `scripts/check_eval_regression.py` fails the nightly GitHub Actions run if average recall drops below 0.85. Quality degradation gets caught automatically, not manually."
 
+**WHY THIS DECISION:** "Looks good" is not a metric. An offline harness with a concrete pass threshold turns quality into a reproducible number, and wiring it to a nightly regression gate means degradation is caught by CI automatically — not discovered by a user in production. Evaluation is treated as a release gate, not an afterthought.
+
 **JD ALIGNMENT:** *"Define robust evaluation frameworks — offline metrics for relevance; model and retrieval evaluation; measurable success criteria; AI experiment tracking."*
 
 ---
@@ -306,6 +326,8 @@ python backend/eval.py
 > "Every response has an approve and flag control. Flagging opens a comment form — 'incorrect relationship', 'wrong reasoning' — and the flagged response accumulates in a Review sidebar.
 >
 > This is the human evaluation workflow for legally sensitive outputs. In PropTech, an AI answer about fair housing or GDPR scope could have real compliance implications. You need a mechanism for a human expert to catch and annotate bad outputs before they influence decisions. Those flags feed directly into the LangSmith eval dataset."
+
+**WHY THIS DECISION:** Automated metrics can't judge whether a fair-housing or GDPR answer is *defensible* — that needs a human expert. Building approve/flag into the product gives that catch-net inline, and routing the flags back into the LangSmith eval dataset closes the loop: human judgment becomes labeled data that improves the automated evals.
 
 **JD ALIGNMENT:** *"Human evaluation workflows for complex or sensitive tasks; governance and responsible AI."*
 
@@ -332,6 +354,8 @@ python3 -m pytest tests/ -m "not llm" -q 2>&1 | tail -5
 >
 > The test architecture is also a design document — it shows what the system guarantees."
 
+**WHY THIS DECISION:** A four-tier suite guarantees behavior at each layer, but the deliberate choice is *excluding the LLM tests from the push gate* — tests that cost real dollars don't belong on every commit, so they run nightly instead. That's CI economics: a tradeoff you only make once you treat a test suite as having a per-run price tag.
+
 **JD ALIGNMENT:** *"Guide architectural decisions and code quality; modular reusable coding practices; CI/CD; Observability, logging, and incident response."*
 
 ---
@@ -350,6 +374,8 @@ python3 -m pytest tests/ -m "not llm" -q 2>&1 | tail -5
 **ON SCREEN:** Scroll to the maturity assessment table showing ✅/⚠️/❌
 
 > "Here are key features of this project: agentic systems with real tool-calling loops, hybrid retrieval, model routing that manages cost and explains itself, MCP interoperability that exposes the graph to any AI client over an open standard, full observability from metrics to LangSmith to human feedback, output safety guardrails for a PII-sensitive domain, and an evaluation harness that produces measurable numbers with automated regression alerting. That's the foundation for a production AI platform — not just a demo."
+
+**WHY THIS DECISION:** Owning architecture means every choice is made *explicitly* — alternatives weighed, trade-offs documented, and the gaps named honestly rather than hidden. The decision log (and its not-all-green maturity table) is itself the artifact: it's the difference between writing code and being accountable for a system.
 
 **JD ALIGNMENT:** Closes the full loop across all six JD responsibility areas.
 
