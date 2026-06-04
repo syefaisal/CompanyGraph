@@ -1,6 +1,7 @@
 import os
 import json
 import time
+import logging
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Optional
@@ -11,6 +12,7 @@ from pydantic import BaseModel
 from anthropic import AsyncAnthropic
 from models import NodeCreate, RelationshipCreate
 import graph as g
+logger = logging.getLogger(__name__)
 # Stateless helpers (prompt loading, graph serialization, input/output safety)
 from utils import (
     _load_prompts,
@@ -613,7 +615,8 @@ async def query_graph(body: QueryRequest):
             yield f"data: {json.dumps({'type': 'done', 'model': model, 'route_reason': _route_explanation(body.question), 'latency_ms': round(latency)})}\n\n"
         except Exception as exc:
             _metrics["errors"] += 1
-            yield f"data: {json.dumps({'type': 'error', 'content': str(exc)})}\n\n"
+            logger.exception("Unhandled exception in query_graph event stream", exc_info=exc)
+            yield f"data: {json.dumps({'type': 'error', 'content': 'An internal error occurred.'})}\n\n"
 
     return StreamingResponse(
         event_stream(),
