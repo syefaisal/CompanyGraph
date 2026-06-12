@@ -1,9 +1,6 @@
 # Demo Video Script
 ## CogniGraph — Agentic AI Knowledge Graph for PropTech
-### Target role: Lead AI Engineer, RealPage
 
-**Total runtime:** ~13 minutes  
-**Format:** Screen recording with voiceover  
 
 **Prep checklist before recording:**
 - [ ] `docker compose up -d` (Neo4j healthy)
@@ -464,9 +461,7 @@ python3 -m pytest tests/ -m "not llm" -q 2>&1 | tail -5
 
 ---
 
-## JD Coverage Map
-
-| JD Requirement | Demo Scene |
+## Coverage Map
 |---|---|
 | Model selection strategy (small vs. large, routing) | Scene 4, 5 |
 | Model selection visible to non-technical audience | Scene 4 (badge), Scene 5 (Observe bar chart) |
