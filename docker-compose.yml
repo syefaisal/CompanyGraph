@@ -16,5 +16,38 @@ services:
       timeout: 10s
       retries: 10
 
+  # ── OTel agent-tier collector ───────────────────────────────────────────────
+  # Receives OTLP from the host-run FastAPI backend and forwards to the LGTM
+  # gateway over mTLS. Ports bind to 127.0.0.1 only — the backend runs on the
+  # host (start.sh), so it needs host-reachable ports, but nothing off-box
+  # should be able to inject spans.
+  otel-agent:
+    # Behind a profile so `start.sh` (which runs a bare `docker compose up -d`)
+    # doesn't drag the collector along with Neo4j — it would recreate whatever
+    # collector is already running, using this production config and its TLS
+    # bind mount. Start it explicitly instead:
+    #   docker compose -f docker-compose.yml -f docker-compose.debug.yml up -d otel-agent
+    # Naming the service on the command line auto-enables its profile.
+    profiles: ["otel"]
+    image: otel/opentelemetry-collector-contrib:0.115.1
+    command: ["--config=/etc/otelcol/config.yaml"]
+    ports:
+      - "127.0.0.1:4317:4317"   # OTLP/gRPC
+      - "127.0.0.1:4318:4318"   # OTLP/HTTP — LangSmith's exporter targets this
+    environment:
+      OTEL_SERVICE_NAME: "${OTEL_SERVICE_NAME:-cogni-graph}"
+      ENVIRONMENT: "${ENVIRONMENT:-dev}"
+      LGTM_GATEWAY_ENDPOINT: "${LGTM_GATEWAY_ENDPOINT:-otelcol-gateway.observability.svc:4317}"
+    volumes:
+      - ./deploy/otel-agent-config.yaml:/etc/otelcol/config.yaml:ro
+      - ./deploy/otel-tls:/etc/otelcol/tls:ro   # ca.crt, tls.crt, tls.key
+      - otel_queue:/var/lib/otelcol/storage
+    healthcheck:
+      test: ["CMD", "/otelcol-contrib", "--version"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
 volumes:
   neo4j_data:
+  otel_queue:

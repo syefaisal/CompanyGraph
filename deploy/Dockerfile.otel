@@ -1,0 +1,13 @@
+# Bakes the collector config into the image instead of bind-mounting it.
+#
+# Why: Docker Desktop on this machine doesn't share /Users/syefai/workspace, so
+# a bind mount of the config is denied. Build contexts are streamed to the
+# daemon over the API and need no file-sharing entry, so this works as-is.
+#
+# Tradeoff: config changes need `docker compose build otel-agent`, not just a
+# restart. Fine for the debug loop; for the production path prefer the bind
+# mount in docker-compose.yml (add the repo to Docker Desktop → Settings →
+# Resources → File Sharing).
+FROM otel/opentelemetry-collector-contrib:0.115.1
+
+COPY otel-agent-config.debug.yaml /etc/otelcol/config.yaml

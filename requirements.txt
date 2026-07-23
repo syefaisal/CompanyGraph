@@ -1,5 +1,9 @@
 pytest>=8.0
-langsmith>=0.1.0
+# The [otel] extra is REQUIRED for OTLP export — it pulls in opentelemetry-sdk
+# and the OTLP exporter. Without it, LANGSMITH_OTEL_ENABLED is silently ignored
+# and traces keep going to LangSmith Cloud with no error.
+# >=0.4.25 for LANGSMITH_OTEL_ONLY support.
+langsmith[otel]>=0.4.25
 pyyaml>=6.0
 fastapi==0.115.5
 uvicorn[standard]==0.32.1

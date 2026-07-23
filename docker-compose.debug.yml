@@ -1,0 +1,31 @@
+# Debug override — spans print to stdout instead of shipping to the LGTM gateway.
+#
+#   docker compose -f docker-compose.yml -f docker-compose.debug.yml up -d --build otel-agent
+#   docker compose -f docker-compose.yml -f docker-compose.debug.yml logs -f otel-agent
+#
+# The config is baked into the image rather than bind-mounted: Docker Desktop on
+# this machine does not share /Users/syefai/workspace, so a bind mount of the
+# config file is denied. Build contexts need no file-sharing entry.
+#
+# Consequence: after editing otel-agent-config.debug.yaml, rebuild with --build.
+#
+# Nothing here is needed once the gateway is reachable: run plain
+# `docker compose up` and the production config applies.
+
+services:
+  otel-agent:
+    build:
+      context: ./deploy
+      dockerfile: Dockerfile.otel
+    image: cogni-graph/otel-agent:debug
+    # Override the base image's command — the config now lives at a fixed path
+    # inside the image.
+    command: ["--config=/etc/otelcol/config.yaml"]
+    # !reset clears the base file's volumes outright. A plain `volumes: []`
+    # does NOT work — Compose merges sequences by appending, so an empty list
+    # is a no-op and the base file's bind mounts survive.
+    volumes: !reset []
+    environment:
+      OTEL_SERVICE_NAME: "${OTEL_SERVICE_NAME:-cogni-graph}"
+      ENVIRONMENT: "${ENVIRONMENT:-dev}"
+      # LGTM_GATEWAY_ENDPOINT is unused by the debug config — no gateway hop.
