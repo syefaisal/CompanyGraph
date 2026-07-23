@@ -187,6 +187,7 @@ def load_into_neo4j(graph_data: dict, clear: bool = False) -> None:
         )
         run(cypher, {"from_id": r["from_id"], "to_id": r["to_id"]})
 
+
     # Summary
     from graph import graph_stats
     stats = graph_stats()

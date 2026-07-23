@@ -42,6 +42,7 @@
     ]
   },
   "disabledMcpjsonServers": [
-    "company-graph"
+    "company-graph",
+    "meridian-property-graph"
   ]
 }
