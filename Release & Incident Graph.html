@@ -1,0 +1,387 @@
+<!doctype html><html><head><meta charset=utf8><meta name=viewport content="width=device-width,initial-scale=1,viewport-fit=cover"><style>:root{color-scheme:light;box-sizing:border-box;padding-top:env(safe-area-inset-top,0px);padding-bottom:env(safe-area-inset-bottom,0px)}html{scroll-padding-top:env(safe-area-inset-top,0px)}body{margin:0;padding:0;font:14px -apple-system,BlinkMacSystemFont,sans-serif;background:#faf9f5;color:#141413}img{max-width:100%}[hidden]:not([hidden=until-found i]){display:none!important}</style></head><body>
+<title>Release &amp; Incident Graph</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Instrument+Sans:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap">
+<style>
+/* Layout: header + mode tabs, then a two-column workspace — scrollable graph canvas left, reading panel right; stacks under 1000px */
+:root {
+  --bg: #f3f5f6; --surface: #ffffff; --fg: #15202a; --muted: #5a6873; --line: #cfd7dd; --edge: #9eabb5; --soft: #e8edf0;
+  --cust: #2e6db0; --topo: #23866a; --chg: #b0741a; --inc: #c23c36; --kn: #744bb0;
+  --focus: #15202a; --code-bg: #eef2f4;
+  --f-display: "Instrument Sans", "Segoe UI", system-ui, sans-serif;
+  --f-body: "Instrument Sans", "Segoe UI", system-ui, sans-serif;
+  --f-mono: "JetBrains Mono", ui-monospace, "SFMono-Regular", Consolas, monospace;
+}
+@media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) {
+  --bg: #0e1317; --surface: #162028; --fg: #e2e9ee; --muted: #93a2ad; --line: #2b3943; --edge: #566570; --soft: #1d2931;
+  --cust: #6ea8ea; --topo: #58c39d; --chg: #e2aa4c; --inc: #ef7b73; --kn: #b394ec;
+  --focus: #e2e9ee; --code-bg: #111a20; color-scheme: dark } }
+:root[data-theme="dark"] {
+  --bg: #0e1317; --surface: #162028; --fg: #e2e9ee; --muted: #93a2ad; --line: #2b3943; --edge: #566570; --soft: #1d2931;
+  --cust: #6ea8ea; --topo: #58c39d; --chg: #e2aa4c; --inc: #ef7b73; --kn: #b394ec;
+  --focus: #e2e9ee; --code-bg: #111a20; color-scheme: dark }
+
+body { background: var(--bg); color: var(--fg); font-family: var(--f-body); font-size: 15px; line-height: 1.5; }
+.wrap { max-width: 1380px; margin: 0 auto; padding-inline: 20px; padding-block: 24px 40px; display: grid; gap: 18px; }
+header { display: grid; gap: 6px; }
+.eyebrow { font-family: var(--f-mono); font-size: 11.5px; letter-spacing: .08em; text-transform: uppercase; color: var(--muted); }
+h1 { font-family: var(--f-display); font-size: clamp(24px, 3vw, 32px); font-weight: 700; margin: 0; letter-spacing: -.01em; text-wrap: balance; }
+.lede { margin: 0; max-width: 72ch; color: var(--muted); }
+
+.bar { display: flex; flex-wrap: wrap; gap: 12px 24px; align-items: center; justify-content: space-between; }
+.tabs { display: flex; flex-wrap: wrap; gap: 4px; background: var(--soft); padding: 4px; border-radius: 8px; }
+.tabs button { font: 500 13.5px var(--f-body); color: var(--muted); background: transparent; border: 0; padding: 7px 14px; border-radius: 6px; cursor: pointer; }
+.tabs button[aria-selected="true"] { background: var(--surface); color: var(--fg); box-shadow: 0 1px 2px rgba(0,0,0,.12); }
+.tabs button:focus-visible, .btn:focus-visible, .rel:focus-visible { outline: 2px solid var(--focus); outline-offset: 2px; }
+.legend { display: flex; flex-wrap: wrap; gap: 6px 16px; font-size: 12.5px; color: var(--muted); }
+.legend span { display: inline-flex; align-items: center; gap: 6px; }
+.legend i { width: 10px; height: 10px; border-radius: 3px; border: 2px solid currentColor; display: inline-block; }
+
+.work { display: grid; grid-template-columns: minmax(0, 1fr) 380px; gap: 18px; align-items: start; }
+@media (max-width: 1000px) { .work { grid-template-columns: minmax(0, 1fr); } }
+.canvas { background: var(--surface); border: 1px solid var(--line); border-radius: 10px; overflow-x: auto; min-width: 0; }
+.canvas svg { display: block; width: 100%; min-width: 940px; height: auto; }
+.hint-narrow { display: none; font-size: 12.5px; color: var(--muted); padding: 8px 12px 0; }
+@media (max-width: 700px) { .hint-narrow { display: block; } }
+
+.panel { background: var(--surface); border: 1px solid var(--line); border-radius: 10px; padding: 18px; display: grid; gap: 14px; min-width: 0; }
+.panel h2 { font-family: var(--f-display); font-size: 19px; margin: 0; line-height: 1.3; text-wrap: balance; }
+.panel h3 { font-size: 11.5px; font-family: var(--f-mono); letter-spacing: .08em; text-transform: uppercase; color: var(--muted); margin: 0; font-weight: 500; }
+.panel p { margin: 0; }
+.panel ul { margin: 0; padding-left: 18px; display: grid; gap: 4px; }
+.stepnav { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
+.dots { display: flex; gap: 6px; }
+.dots button { width: 22px; height: 6px; border-radius: 3px; border: 0; background: var(--line); cursor: pointer; padding: 0; }
+.dots button.on { background: var(--fg); }
+.btn { font: 500 13px var(--f-body); color: var(--fg); background: var(--soft); border: 1px solid var(--line); border-radius: 6px; padding: 6px 12px; cursor: pointer; }
+.btn:disabled { opacity: .4; cursor: default; }
+pre { margin: 0; background: var(--code-bg); border: 1px solid var(--line); border-radius: 6px; padding: 10px 12px; font: 12px/1.55 var(--f-mono); overflow-x: auto; white-space: pre; color: var(--fg); }
+.kw { color: var(--kn); }
+.divider { height: 1px; background: var(--line); }
+.chip { display: inline-flex; align-items: center; gap: 6px; font: 500 11.5px var(--f-mono); text-transform: uppercase; letter-spacing: .06em; }
+.chip i { width: 9px; height: 9px; border-radius: 2px; background: currentColor; display: inline-block; }
+dl { margin: 0; display: grid; grid-template-columns: max-content minmax(0, 1fr); gap: 4px 14px; font-size: 13.5px; }
+dt { color: var(--muted); font-family: var(--f-mono); font-size: 12px; padding-top: 1px; }
+dd { margin: 0; overflow-wrap: anywhere; font-variant-numeric: tabular-nums; }
+.rels { display: grid; gap: 4px; }
+.rel { display: flex; gap: 8px; align-items: baseline; text-align: left; font: 13.5px var(--f-body); color: var(--fg); background: none; border: 0; padding: 3px 0; cursor: pointer; }
+.rel:hover span:last-child { text-decoration: underline; }
+.rel code { font: 11px var(--f-mono); color: var(--muted); white-space: nowrap; }
+.score { width: 100%; border-collapse: collapse; font-size: 13px; font-variant-numeric: tabular-nums; }
+.score th, .score td { text-align: left; padding: 5px 4px; border-bottom: 1px solid var(--line); vertical-align: top; }
+.score th { font: 500 11px var(--f-mono); color: var(--muted); text-transform: uppercase; letter-spacing: .05em; }
+.score td.n { text-align: right; white-space: nowrap; }
+.score tfoot td { font-weight: 700; border-bottom: 0; }
+.verdict { display: inline-block; font: 600 12px var(--f-mono); padding: 2px 8px; border-radius: 4px; border: 1.5px solid var(--inc); color: var(--inc); }
+.muted { color: var(--muted); font-size: 13px; }
+
+/* graph */
+.band-label { font: 500 11px var(--f-mono); letter-spacing: .08em; text-transform: uppercase; fill: var(--muted); }
+.band-line { stroke: var(--line); stroke-dasharray: 4 5; }
+.edge path { fill: none; stroke: var(--edge); stroke-width: 1.3; transition: opacity .2s, stroke .2s; }
+.edge.hi path { stroke: var(--fg); stroke-width: 2; }
+.edge.ruled path { stroke: var(--fg); stroke-dasharray: 5 4; }
+.edge .lab { opacity: 0; transition: opacity .2s; pointer-events: none; }
+.edge.hi .lab, .edge.ruled .lab { opacity: 1; }
+.lab rect { fill: var(--surface); stroke: var(--line); }
+.lab text { font: 500 9.5px var(--f-mono); fill: var(--fg); }
+.dim { opacity: .16; }
+.node { cursor: pointer; transition: opacity .2s; }
+.node rect.box { fill: var(--surface); stroke-width: 1.6; }
+.node .t { font: 500 9px var(--f-mono); letter-spacing: .06em; text-transform: uppercase; }
+.node .l { font: 600 12.5px var(--f-body); fill: var(--fg); }
+.node .ring { fill: none; stroke: var(--focus); stroke-width: 2.4; opacity: 0; }
+.node.focus .ring, .node.sel .ring { opacity: 1; }
+.node.ruled rect.box { stroke-dasharray: 4 3; }
+.node:focus { outline: none; }
+.node:focus-visible .ring { opacity: 1; stroke-dasharray: 3 3; }
+.m-edge { fill: var(--edge); } .m-hi { fill: var(--fg); }
+@media (prefers-reduced-motion: reduce) { .edge path, .node, .edge .lab { transition: none; } }
+</style>
+
+<div class="wrap">
+  <header>
+    <div class="eyebrow">Sample data · 25 nodes from 5 systems</div>
+    <h1>Release &amp; Incident Graph</h1>
+    <p class="lede">A small, realistic slice of the knowledge graph behind the Release Risk and Incident RCA agents. Click any node to see its properties and relationships, or pick a walkthrough to watch how each agent traverses the graph.</p>
+  </header>
+
+  <div class="bar">
+    <div class="tabs" role="tablist" aria-label="Mode">
+      <button role="tab" id="tab-explore" data-mode="explore" aria-selected="true">Explore</button>
+      <button role="tab" id="tab-rca" data-mode="rca" aria-selected="false">Incident RCA · INC-7731</button>
+      <button role="tab" id="tab-risk" data-mode="risk" aria-selected="false">Release risk · CR-4830</button>
+    </div>
+    <div class="legend" aria-label="Legend">
+      <span style="color:var(--cust)"><i></i><b style="color:var(--muted);font-weight:500">Customers · Salesforce</b></span>
+      <span style="color:var(--topo)"><i></i><b style="color:var(--muted);font-weight:500">Topology · CMDB</b></span>
+      <span style="color:var(--chg)"><i></i><b style="color:var(--muted);font-weight:500">Changes · TFS</b></span>
+      <span style="color:var(--inc)"><i></i><b style="color:var(--muted);font-weight:500">Incidents · Salesforce</b></span>
+      <span style="color:var(--kn)"><i></i><b style="color:var(--muted);font-weight:500">Knowledge · RCA docs</b></span>
+    </div>
+  </div>
+
+  <div class="work">
+    <div class="canvas">
+      <div class="hint-narrow">Scroll sideways to see the whole graph.</div>
+      <svg id="g" viewBox="0 0 1240 725" role="img" aria-label="Knowledge graph of customers, services, changes, incidents and RCAs">
+        <defs>
+          <marker id="arr" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path class="m-edge" d="M0,0 L10,5 L0,10 z"/></marker>
+          <marker id="arr-hi" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path class="m-hi" d="M0,0 L10,5 L0,10 z"/></marker>
+        </defs>
+        <text class="band-label" x="20" y="14">Estate — who uses what, and what runs on what</text>
+        <line class="band-line" x1="20" y1="432" x2="1220" y2="432"/>
+        <text class="band-label" x="20" y="452">Events &amp; knowledge — what changed, what broke, what we learned</text>
+        <g id="edges"></g>
+        <g id="nodes"></g>
+      </svg>
+    </div>
+    <aside class="panel" id="panel" aria-live="polite">
+      <div id="mode"></div>
+      <div id="detail-wrap" hidden>
+        <div class="divider" style="margin-bottom:14px"></div>
+        <div id="detail"></div>
+      </div>
+    </aside>
+  </div>
+</div>
+
+<script>
+(function () {
+const DOM = { cust: "Customer", topo: "Topology", chg: "Change", inc: "Incident", kn: "Knowledge" };
+const N = [
+  { id: "C1", type: "Customer", d: "cust", label: "Northwind Retail", x: 90, y: 120, src: "Salesforce Account", props: { tier: "Platinum", arr_band: "$1M+", tenant: "eastus-prod-07", sf_id: "001A000001NWR" } },
+  { id: "C2", type: "Customer", d: "cust", label: "Contoso Health", x: 90, y: 220, src: "Salesforce Account", props: { tier: "Gold", arr_band: "$250k–1M", tenant: "eastus-prod-03", sf_id: "001A000001CTH" } },
+  { id: "C3", type: "Customer", d: "cust", label: "Fabrikam Logistics", x: 90, y: 320, src: "Salesforce Account", props: { tier: "Silver", arr_band: "< $250k", tenant: "eastus-prod-03", sf_id: "001A000001FBL" } },
+  { id: "T1", type: "Team", d: "topo", label: "Payments Team", x: 300, y: 40, src: "CMDB support group", props: { oncall: "pay-oncall", manager: "(sample)" } },
+  { id: "P1", type: "Product", d: "topo", label: "Checkout Suite", x: 300, y: 150, src: "Resolved: Salesforce + CMDB", props: { canonical_id: "prd:checkout", aliases: "SF “Checkout Suite”, CMDB “CHK-SUITE”, TFS area “\\Commerce\\Checkout”" } },
+  { id: "P2", type: "Product", d: "topo", label: "Analytics Hub", x: 300, y: 310, src: "Resolved: Salesforce + CMDB", props: { canonical_id: "prd:analytics", aliases: "SF “Analytics Hub”, CMDB “ANL-HUB”" } },
+  { id: "S1", type: "Service", d: "topo", label: "Payments API", x: 520, y: 180, src: "CMDB CI", props: { ci_id: "CI-10442", criticality: "Tier 0", owner: "Payments Team" } },
+  { id: "S2", type: "Service", d: "topo", label: "Order Service", x: 520, y: 90, src: "CMDB CI", props: { ci_id: "CI-10417", criticality: "Tier 1" } },
+  { id: "S3", type: "Service", d: "topo", label: "Auth Service", x: 520, y: 270, src: "CMDB CI", props: { ci_id: "CI-10020", criticality: "Tier 0", note: "Hub: 9 services depend on it estate-wide" } },
+  { id: "S4", type: "Service", d: "topo", label: "Reporting Service", x: 520, y: 360, src: "CMDB CI", props: { ci_id: "CI-11210", criticality: "Tier 2" } },
+  { id: "K1", type: "Component", d: "topo", label: "payments-gateway", x: 740, y: 180, src: "CMDB CI", props: { ci_id: "CI-20881", version: "4.2.0", repo: "commerce/payments-gateway" } },
+  { id: "K2", type: "Component", d: "topo", label: "order-db", x: 740, y: 90, src: "CMDB CI", props: { ci_id: "CI-20512", engine: "PostgreSQL 15" } },
+  { id: "K3", type: "Component", d: "topo", label: "token-cache", x: 740, y: 270, src: "CMDB CI", props: { ci_id: "CI-20077", engine: "Redis 7", maxmemory: "4 GB" } },
+  { id: "K4", type: "Component", d: "topo", label: "report-etl", x: 740, y: 360, src: "CMDB CI", props: { ci_id: "CI-21304", schedule: "hourly" } },
+  { id: "I1", type: "Infra", d: "topo", label: "aks-prod-eastus", x: 950, y: 330, src: "CMDB CI", props: { kind: "AKS cluster", region: "East US" } },
+  { id: "I2", type: "Infra", d: "topo", label: "pg-prod-01", x: 950, y: 70, src: "CMDB CI", props: { kind: "Azure Database for PostgreSQL", region: "East US" } },
+  { id: "CR2", type: "Change request", d: "chg", label: "CR-4830", x: 1150, y: 90, src: "TFS work item", props: { title: "Raise token-cache maxmemory 4→8 GB, switch eviction to allkeys-lru", status: "Scheduled", planned_at: "2026-10-02 22:00 CT", lines_changed: "38 (config)" } },
+  { id: "R1", type: "Release", d: "chg", label: "Release 2026.38", x: 1150, y: 200, src: "TFS release", props: { window: "2026-09-14 02:00 CT", environment: "prod-eastus" } },
+  { id: "CR1", type: "Change request", d: "chg", label: "CR-4812", x: 1150, y: 330, src: "TFS work item", props: { title: "Upgrade TLS library in payments-gateway", status: "Deployed", deployed_at: "2026-09-14 02:10 CT", risk_at_submit: "Low (self-assessed)", lines_changed: "1,240" } },
+  { id: "INC1", type: "Incident", d: "inc", label: "INC-7731", x: 300, y: 500, src: "Salesforce Service Cloud", props: { severity: "Sev1", start: "2026-09-14 02:25 CT", end: "2026-09-14 03:40 CT", summary: "Checkout payments failing with TLS handshake errors", linked_cases: "14" } },
+  { id: "INC2", type: "Incident", d: "inc", label: "INC-6902", x: 90, y: 590, src: "Salesforce Service Cloud", props: { severity: "Sev2", start: "2026-05-03 09:12 CT", summary: "Payment timeouts after certificate rotation", affected: "Payments API" } },
+  { id: "RCA1", type: "RCA", d: "kn", label: "RCA-7731", x: 520, y: 570, src: "RCA document (extracted)", props: { status: "Approved 2026-09-18", extractor: "rca-extractor v0.3", extraction_confidence: "0.94" } },
+  { id: "RCA2", type: "RCA", d: "kn", label: "RCA-6902", x: 90, y: 682, src: "RCA document (extracted)", props: { status: "Approved 2026-05-09", extractor: "rca-extractor v0.3" } },
+  { id: "RC1", type: "Root cause", d: "kn", label: "TLS / cert config", x: 300, y: 650, src: "Curated taxonomy", props: { code: "RC-CFG-TLS", incidents_6mo: "2" } },
+  { id: "AI1", type: "Action item", d: "kn", label: "AI-221 TLS canary", x: 740, y: 570, src: "Extracted from RCA-7731", props: { title: "Add TLS handshake canary to payments-gateway deploys", status: "Open", owner: "Payments Team", due: "2026-10-15" } }
+];
+const topo = { valid_from: "2025-11-02", source: "CMDB" };
+const E = [
+  ["C1","P1","SUBSCRIBES_TO",{ since: "2023-04" }], ["C2","P1","SUBSCRIBES_TO",{ since: "2024-01" }], ["C2","P2","SUBSCRIBES_TO",{ since: "2024-06" }], ["C3","P2","SUBSCRIBES_TO",{ since: "2025-02" }],
+  ["T1","S1","OWNS",{}],
+  ["P1","S2","COMPOSED_OF",topo], ["P1","S1","COMPOSED_OF",topo], ["P2","S4","COMPOSED_OF",topo],
+  ["S2","S1","DEPENDS_ON",{ criticality: "hard", ...topo }, { side: "L" }], ["S1","S3","DEPENDS_ON",{ criticality: "hard", ...topo }, { side: "L" }], ["S4","S2","DEPENDS_ON",{ criticality: "soft", ...topo }, { side: "L" }],
+  ["S1","K1","COMPOSED_OF",topo], ["S2","K2","COMPOSED_OF",topo], ["S3","K3","COMPOSED_OF",topo], ["S4","K4","COMPOSED_OF",topo],
+  ["K1","I1","RUNS_ON",topo], ["K3","I1","RUNS_ON",topo], ["K4","I1","RUNS_ON",topo], ["K2","I2","RUNS_ON",topo],
+  ["R1","CR1","BUNDLES",{}], ["CR1","K1","MODIFIES",{ source: "TFS linked CI" }], ["CR2","K3","MODIFIES",{ source: "TFS linked CI" }],
+  ["INC1","S1","AFFECTED",{ start: "02:25" }, { c: [390, 230] }],
+  ["INC1","C1","IMPACTED",{ cases: 9 }, { c: [190, 210] }], ["INC1","C2","IMPACTED",{ cases: 5 }, { c: [200, 300] }],
+  ["INC1","CR1","CAUSED_BY",{ confidence: 0.92, source: "human-confirmed" }, { c: [800, 560] }],
+  ["RCA1","INC1","DOCUMENTS",{}], ["RCA1","RC1","IDENTIFIES",{ confidence: 0.94 }], ["RCA1","AI1","HAS_ACTION",{}], ["AI1","K1","TARGETS",{}, { c: [920, 370] }],
+  ["INC2","INC1","SIMILAR_TO",{ score: 0.87 }], ["RCA2","INC2","DOCUMENTS",{}], ["RCA2","RC1","IDENTIFIES",{ confidence: 0.9 }]
+].map(([s, t, type, props, geo]) => ({ s, t, type, props, geo: geo || {}, key: s + ">" + t }));
+const byId = Object.fromEntries(N.map(n => [n.id, n]));
+
+// ---------- scenarios ----------
+const radius = ["S3>K3","S1>S3","S2>S1","S4>S2","P1>S1","P1>S2","P2>S4","C1>P1","C2>P1","C2>P2","C3>P2"];
+const S = {
+  rca: { title: "Incident RCA", steps: [
+    { t: "Anchor on the incident", nodes: ["INC1","S1"], edges: ["INC1>S1"], focus: ["INC1"],
+      p: "INC-7731 is a Sev1 that started at 02:25. The agent always starts from the CIs the incident touched: here, Payments API.",
+      q: "MATCH (i:Incident {id:'INC-7731'})-[:AFFECTED]->(ci)\nRETURN ci.name, ci.criticality" },
+    { t: "Find who is impacted", nodes: ["INC1","S1","S2","S4","P1","P2","C1","C2","C3"], edges: ["S2>S1","S4>S2","P1>S1","P1>S2","P2>S4","C1>P1","C2>P1","C2>P2","C3>P2","INC1>C1","INC1>C2"], focus: ["C3"],
+      p: "Walking DEPENDS_ON backwards reaches Order and Reporting, then products, then customers. Northwind and Contoso opened cases. Fabrikam was exposed through Analytics Hub but never raised one, so it is a candidate for proactive outreach.",
+      q: "MATCH (s:Service {id:'S1'})<-[:DEPENDS_ON*0..3]-(d:Service)\n      <-[:COMPOSED_OF]-(p:Product)<-[:SUBSCRIBES_TO]-(c:Customer)\nRETURN c.name, c.tier, collect(DISTINCT d.name) AS via" },
+    { t: "List upstream suspects", nodes: ["S1","K1","S3","K3","I1"], edges: ["S1>K1","S1>S3","S3>K3","K1>I1","K3>I1"], focus: ["K1","K3"],
+      p: "Causes live upstream. Payments API runs on payments-gateway and depends on Auth Service, which uses token-cache. Both run on aks-prod-eastus.",
+      q: "MATCH path = (s:Service {id:'S1'})\n  -[:DEPENDS_ON|COMPOSED_OF|RUNS_ON*1..3]->(ci)\nWHERE all(r IN relationships(path)\n      WHERE r.valid_from <= $incident_start)\nRETURN DISTINCT ci" },
+    { t: "Check what changed upstream", nodes: ["S1","K1","S3","K3","I1","CR1","CR2","R1"], edges: ["S1>K1","S1>S3","S3>K3","CR1>K1","CR2>K3","R1>CR1"], focus: ["CR1"], ruled: ["CR2"],
+      p: "CR-4812 upgraded the TLS library in payments-gateway at 02:10, 15 minutes before the incident. CR-4830 also touches an upstream component, but it is only scheduled, so the time window rules it out.",
+      q: "MATCH (i:Incident {id:'INC-7731'})-[:AFFECTED]->(s)\nMATCH (s)-[:DEPENDS_ON|COMPOSED_OF|RUNS_ON*0..3]->(ci)\n      <-[:MODIFIES]-(cr:ChangeRequest)\nWHERE cr.deployed_at >= i.start - duration('PT6H')\n  AND cr.deployed_at <= i.start\nRETURN cr.id, ci.name,\n       duration.between(cr.deployed_at, i.start) AS lead" },
+    { t: "Compare with past incidents", nodes: ["INC1","INC2","RCA2","RC1"], edges: ["INC2>INC1","RCA2>INC2","RCA2>RC1"], focus: ["RC1"],
+      p: "Hybrid retrieval finds INC-6902 (similarity 0.87, same service). Its RCA names TLS / certificate config as the root cause, which fits a TLS library upgrade. RCA-7731 stays hidden here: it was written after the incident, and the agent only sees what existed at 02:25.",
+      q: "CALL db.index.vector.queryNodes('incident_vec', 10, $symptoms)\nYIELD node AS past, score\nMATCH (past)-[:AFFECTED]->(:Service {id:'S1'})\nWHERE past.start < $incident_start\nOPTIONAL MATCH (past)<-[:DOCUMENTS]-(:RCA)\n      -[:IDENTIFIES]->(rc:RootCause)\nRETURN past.id, score, rc.code ORDER BY score DESC" },
+    { t: "Rank the hypothesis and write back", nodes: ["INC1","CR1","K1","RCA1","RC1","AI1"], edges: ["INC1>CR1","RCA1>INC1","RCA1>RC1","RCA1>AI1","AI1>K1"], focus: ["CR1"],
+      p: "Top hypothesis: CR-4812, backed by an evidence path, a 15-minute lead time and a matching past root cause. Once the engineer confirms, the agent writes CAUSED_BY back to the graph. The approved RCA then adds the root cause and action item AI-221, so the next investigation starts smarter.",
+      q: "MATCH (i:Incident {id:'INC-7731'}), (cr:ChangeRequest {id:'CR-4812'})\nMERGE (i)-[r:CAUSED_BY]->(cr)\nSET r.confidence = 0.92,\n    r.source = 'human-confirmed',\n    r.confirmed_at = datetime()" }
+  ]},
+  risk: { title: "Release risk", steps: [
+    { t: "Anchor on the change", nodes: ["CR2","K3"], edges: ["CR2>K3"], focus: ["CR2"],
+      p: "CR-4830 raises token-cache memory and changes its eviction policy. It is scheduled for Friday 2026-10-02 at 22:00 and was self-assessed as low risk.",
+      q: "MATCH (cr:ChangeRequest {id:'CR-4830'})-[:MODIFIES]->(ci)\nRETURN ci.name, labels(ci)" },
+    { t: "Measure the blast radius", nodes: ["CR2","K3","S3","S1","S2","S4","P1","P2","C1","C2","C3"], edges: ["CR2>K3"].concat(radius), focus: ["S3"],
+      p: "Auth Service is a Tier 0 hub. A change to its cache reaches four services, both products and all three customers, including one Platinum account.",
+      q: "MATCH (:ChangeRequest {id:'CR-4830'})-[:MODIFIES]->(ci)\nMATCH (ci)<-[:COMPOSED_OF]-(s:Service)\n      <-[:DEPENDS_ON*0..4]-(d:Service)\nOPTIONAL MATCH (d)<-[:COMPOSED_OF]-(:Product)\n      <-[:SUBSCRIBES_TO]-(c:Customer)\nRETURN count(DISTINCT d) AS services,\n       collect(DISTINCT c.tier) AS tiers" },
+    { t: "Check recent history", nodes: ["S1","INC1","INC2","RCA1","RCA2","RC1"], edges: ["INC1>S1","INC2>INC1","RCA1>INC1","RCA2>INC2","RCA1>RC1","RCA2>RC1"], focus: ["S1"],
+      p: "Payments API sits inside the blast radius and had two incidents in five months. A recently unstable service downstream of the change raises risk. The changed component itself has no failed changes on record.",
+      q: "MATCH (s:Service)<-[:AFFECTED]-(i:Incident)\nWHERE s.id IN $blast_radius\n  AND i.start > datetime() - duration('P180D')\nRETURN s.name, count(i) AS incidents,\n       collect(i.severity) AS severities" },
+    { t: "Look for collisions and open work", nodes: ["K3","I1","K1","AI1","CR1","R1"], edges: ["K3>I1","K1>I1","AI1>K1","CR1>K1","R1>CR1"], focus: ["AI1"],
+      p: "No other change is scheduled on shared dependencies in the same window. But token-cache shares aks-prod-eastus with payments-gateway, where action item AI-221 (the TLS canary) is still open. A regression on the payments path would be caught late.",
+      q: "MATCH (:ChangeRequest {id:'CR-4830'})-[:MODIFIES]->(ci)\n      -[:RUNS_ON]->(infra)<-[:RUNS_ON]-(peer)\nOPTIONAL MATCH (peer)<-[:TARGETS]-(a:ActionItem {status:'Open'})\nOPTIONAL MATCH (peer)<-[:MODIFIES]-(other:ChangeRequest)\nWHERE other.planned_at > $window_start - duration('P2D')\nRETURN peer.name, collect(a.id), collect(other.id)" },
+    { t: "Score and explain", nodes: ["CR2","K3","S3","S1","S2","S4","P1","P2","C1","C2","C3","AI1"], edges: ["CR2>K3"].concat(radius), focus: ["CR2"], score: true,
+      p: "Features are computed from the graph and scored with transparent weights. The LLM writes the explanation and cites the paths above, but it does not pick the number.",
+      q: null }
+  ]}
+};
+const SCORE = [
+  ["Customer-weighted blast radius", "3 customers, 1 Platinum", 30, 26],
+  ["Tier 0 services reached", "2 (Auth, Payments)", 20, 18],
+  ["Incidents in radius, 6 months", "2 (Sev1, Sev2)", 20, 14],
+  ["Failure rate of touched CIs", "0 of 3 past CRs", 15, 3],
+  ["Open action items in radius", "1 (AI-221)", 10, 7],
+  ["Timing", "Fri 22:00, off-peak", 5, 1]
+];
+
+// ---------- render graph ----------
+const NS = "http://www.w3.org/2000/svg", HW = 70, HH = 23;
+const svgEl = (tag, attrs, parent) => { const e = document.createElementNS(NS, tag); for (const k in attrs) e.setAttribute(k, attrs[k]); if (parent) parent.appendChild(e); return e; };
+function clip(c, to) {
+  const dx = to.x - c.x, dy = to.y - c.y; if (!dx && !dy) return c;
+  const t = Math.min(dx ? HW / Math.abs(dx) : Infinity, dy ? HH / Math.abs(dy) : Infinity);
+  return { x: c.x + dx * t, y: c.y + dy * t };
+}
+const gE = document.getElementById("edges"), gN = document.getElementById("nodes");
+const edgeEls = {}, nodeEls = {};
+E.forEach(e => {
+  const A = byId[e.s], B = byId[e.t]; let d, mx, my;
+  if (e.geo.side) {
+    const a = { x: A.x - HW, y: A.y }, b = { x: B.x - HW, y: B.y };
+    const bulge = Math.min(20 + Math.abs(A.y - B.y) * 0.12, 45), o = bulge * 1.333;
+    d = `M${a.x},${a.y} C${a.x - o},${a.y} ${b.x - o},${b.y} ${b.x - 1},${b.y}`;
+    mx = a.x - bulge; my = (a.y + b.y) / 2;
+  } else if (e.geo.c) {
+    const C = { x: e.geo.c[0], y: e.geo.c[1] }, a = clip(A, C), b = clip(B, C);
+    d = `M${a.x},${a.y} Q${C.x},${C.y} ${b.x},${b.y}`;
+    mx = .25 * a.x + .5 * C.x + .25 * b.x; my = .25 * a.y + .5 * C.y + .25 * b.y;
+  } else {
+    const a = clip(A, B), b = clip(B, A);
+    d = `M${a.x},${a.y} L${b.x},${b.y}`; mx = (a.x + b.x) / 2; my = (a.y + b.y) / 2;
+  }
+  const g = svgEl("g", { class: "edge" }, gE);
+  svgEl("path", { d, "marker-end": "url(#arr)" }, g);
+  const lab = svgEl("g", { class: "lab" }, g), w = e.type.length * 5.8 + 10;
+  svgEl("rect", { x: mx - w / 2, y: my - 8, width: w, height: 16, rx: 3 }, lab);
+  const tx = svgEl("text", { x: mx, y: my + 3.5, "text-anchor": "middle" }, lab); tx.textContent = e.type;
+  edgeEls[e.key] = g;
+});
+N.forEach(n => {
+  const g = svgEl("g", { class: "node", tabindex: "0", role: "button", "aria-label": `${n.type}: ${n.label}`, transform: `translate(${n.x},${n.y})` }, gN);
+  svgEl("rect", { class: "ring", x: -HW - 4, y: -HH - 4, width: HW * 2 + 8, height: HH * 2 + 8, rx: 9 }, g);
+  svgEl("rect", { class: "box", x: -HW, y: -HH, width: HW * 2, height: HH * 2, rx: 6, style: `stroke:var(--${n.d})` }, g);
+  svgEl("rect", { x: -HW + 10, y: -13, width: 7, height: 7, rx: 1.5, style: `fill:var(--${n.d})` }, g);
+  const t = svgEl("text", { class: "t", x: -HW + 22, y: -6.5, style: `fill:var(--${n.d})` }, g); t.textContent = n.type;
+  const l = svgEl("text", { class: "l", x: -HW + 10, y: 12 }, g); l.textContent = n.label;
+  g.addEventListener("click", ev => { ev.stopPropagation(); select(n.id); });
+  g.addEventListener("keydown", ev => { if (ev.key === "Enter" || ev.key === " ") { ev.preventDefault(); select(n.id); } });
+  nodeEls[n.id] = g;
+});
+document.getElementById("g").addEventListener("click", () => { if (mode === "explore") select(null); });
+
+// ---------- state ----------
+let mode = "explore", step = 0, selected = null;
+function paint(set) {
+  const nodes = set ? new Set(set.nodes) : null, edges = set ? new Set(set.edges) : null;
+  const focus = new Set(set?.focus || []), ruled = new Set(set?.ruled || []);
+  N.forEach(n => { const el = nodeEls[n.id];
+    el.classList.toggle("dim", !!nodes && !nodes.has(n.id));
+    el.classList.toggle("focus", focus.has(n.id));
+    el.classList.toggle("ruled", ruled.has(n.id));
+    el.classList.toggle("sel", selected === n.id && mode !== "explore"); });
+  E.forEach(e => { const el = edgeEls[e.key], on = !!edges && edges.has(e.key);
+    const isRuled = on && (ruled.has(e.s) || ruled.has(e.t));
+    el.classList.toggle("dim", !!edges && !on);
+    el.classList.toggle("hi", on && !isRuled);
+    el.classList.toggle("ruled", isRuled);
+    el.querySelector("path").setAttribute("marker-end", on ? "url(#arr-hi)" : "url(#arr)"); });
+}
+function exploreSet() {
+  if (!selected) return null;
+  const inc = E.filter(e => e.s === selected || e.t === selected);
+  return { nodes: [selected, ...inc.map(e => e.s === selected ? e.t : e.s)], edges: inc.map(e => e.key), focus: [selected] };
+}
+const esc = s => String(s).replace(/[&<>"]/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
+const hl = q => esc(q).replace(/\b(MATCH|OPTIONAL|WHERE|RETURN|MERGE|SET|CALL|YIELD|ORDER BY|DESC|AND|IN|AS|DISTINCT|all|count|collect|duration|datetime)\b/g, '<span class="kw">$1</span>');
+
+function renderMode() {
+  const m = document.getElementById("mode");
+  if (mode === "explore") {
+    const counts = {}; N.forEach(n => counts[n.d] = (counts[n.d] || 0) + 1);
+    m.innerHTML = `<div style="display:grid;gap:12px">
+      <h3>How to read it</h3>
+      <h2>${N.length} nodes, ${E.length} relationships</h2>
+      <p>The top band is the estate: customers subscribe to products, products are made of services, services depend on each other and run on infrastructure. The bottom band holds events and knowledge: releases and change requests, incidents, RCAs, root causes and action items.</p>
+      <ul>
+        <li>Topology edges carry <code>valid_from</code> and <code>valid_to</code>, so agents can ask what the graph looked like when something broke.</li>
+        <li>Every edge records its source and, where extracted, a confidence.</li>
+        <li>Products show entity resolution: one canonical node holding the Salesforce, CMDB and TFS names.</li>
+      </ul>
+      <p class="muted">Select a node to see its properties and relationships. All names and numbers are sample data.</p></div>`;
+    return;
+  }
+  const sc = S[mode], st = sc.steps[step];
+  const dots = sc.steps.map((_, i) => `<button aria-label="Step ${i + 1}" class="${i === step ? "on" : ""}" data-step="${i}"></button>`).join("");
+  let body = `<p>${esc(st.p)}</p>`;
+  if (st.q) body += `<div style="display:grid;gap:6px"><h3>Graph query</h3><pre>${hl(st.q)}</pre></div>`;
+  if (st.score) {
+    const tot = SCORE.reduce((a, r) => a + r[3], 0);
+    body += `<div style="overflow-x:auto"><table class="score"><thead><tr><th>Feature</th><th>Value</th><th class="n">Pts</th></tr></thead><tbody>${
+      SCORE.map(r => `<tr><td>${esc(r[0])}</td><td>${esc(r[1])}</td><td class="n">${r[3]} / ${r[2]}</td></tr>`).join("")
+    }</tbody><tfoot><tr><td colspan="2">Risk score</td><td class="n">${tot} / 100</td></tr></tfoot></table></div>
+    <p><span class="verdict">HIGH RISK</span></p>
+    <p><b>Recommendation:</b> keep the Friday off-peak window, canary on one Auth Service replica first, and require Payments Team sign-off until AI-221 ships.</p>`;
+  }
+  m.innerHTML = `<div style="display:grid;gap:12px">
+    <div class="stepnav"><h3>${esc(sc.title)} · Step ${step + 1} of ${sc.steps.length}</h3><div class="dots">${dots}</div></div>
+    <h2>${esc(st.t)}</h2>${body}
+    <div class="stepnav"><button class="btn" id="prev" ${step === 0 ? "disabled" : ""}>Previous</button><button class="btn" id="next" ${step === sc.steps.length - 1 ? "disabled" : ""}>Next step</button></div></div>`;
+  m.querySelector("#prev").onclick = () => go(step - 1);
+  m.querySelector("#next").onclick = () => go(step + 1);
+  m.querySelectorAll(".dots button").forEach(b => b.onclick = () => go(+b.dataset.step));
+}
+function renderDetail() {
+  const wrap = document.getElementById("detail-wrap"), d = document.getElementById("detail");
+  if (!selected) { wrap.hidden = true; return; }
+  const n = byId[selected]; wrap.hidden = false;
+  const out = E.filter(e => e.s === n.id), inn = E.filter(e => e.t === n.id);
+  const rel = (e, dir) => { const o = byId[dir === "out" ? e.t : e.s];
+    const pr = Object.entries(e.props || {}).map(([k, v]) => `${k}: ${v}`).join(", ");
+    return `<button class="rel" data-id="${o.id}" title="${esc(pr)}"><code>${dir === "out" ? "→" : "←"} ${e.type}</code><span>${esc(o.label)}</span></button>`; };
+  d.innerHTML = `<div style="display:grid;gap:12px">
+    <span class="chip" style="color:var(--${n.d})"><i></i>${esc(n.type)} · ${DOM[n.d]}</span>
+    <h2>${esc(n.label)}</h2>
+    <dl><dt>source</dt><dd>${esc(n.src)}</dd>${Object.entries(n.props).map(([k, v]) => `<dt>${esc(k)}</dt><dd>${esc(v)}</dd>`).join("")}</dl>
+    <h3>Relationships</h3><div class="rels">${out.map(e => rel(e, "out")).join("")}${inn.map(e => rel(e, "in")).join("")}</div></div>`;
+  d.querySelectorAll(".rel").forEach(b => b.onclick = () => select(b.dataset.id));
+}
+function select(id) {
+  selected = id; renderDetail();
+  paint(mode === "explore" ? exploreSet() : S[mode].steps[step]);
+}
+function go(i) { const n = S[mode].steps.length; step = Math.max(0, Math.min(n - 1, i)); renderMode(); paint(S[mode].steps[step]); }
+function setMode(m) {
+  mode = m; step = 0; selected = null;
+  document.querySelectorAll(".tabs button").forEach(b => b.setAttribute("aria-selected", String(b.dataset.mode === m)));
+  renderMode(); renderDetail(); paint(m === "explore" ? null : S[m].steps[0]);
+}
+document.querySelectorAll(".tabs button").forEach(b => b.onclick = () => setMode(b.dataset.mode));
+document.addEventListener("keydown", ev => {
+  if (mode === "explore" || ev.target.closest?.("input,textarea")) return;
+  if (ev.key === "ArrowRight") go(step + 1); if (ev.key === "ArrowLeft") go(step - 1);
+});
+const h = (location.hash || "").slice(1);
+setMode(h === "rca" || h === "risk" ? h : "explore");
+})();
+</script>
+
+</body></html>
